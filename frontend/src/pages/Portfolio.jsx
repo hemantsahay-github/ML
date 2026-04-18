@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import api from "../lib/api";
 import { inr, inrFull } from "../lib/format";
+import Disclaimer from "../components/Disclaimer";
 import {
   TrendUp,
   TrendDown,
@@ -456,6 +457,7 @@ export default function Portfolio() {
           </div>
         </>
       )}
+      <Disclaimer />
     </div>
   );
 }

@@ -133,6 +133,7 @@ class RegisterIn(BaseModel):
     email: EmailStr
     password: str = Field(min_length=6)
     name: str = Field(min_length=1)
+    referral_code: Optional[str] = None
 
 
 class LoginIn(BaseModel):
@@ -214,6 +215,18 @@ async def register(body: RegisterIn, response: Response):
         raise HTTPException(status_code=400, detail="Email already registered")
     now = datetime.now(timezone.utc)
     trial_end = now + timedelta(days=TRIAL_DAYS)
+
+    referral_code = secrets.token_urlsafe(6).replace("_", "").replace("-", "")[:8].upper()
+    # ensure uniqueness (rare collision)
+    while await db.users.find_one({"referral_code": referral_code}):
+        referral_code = secrets.token_urlsafe(6).upper()[:8]
+
+    referred_by = None
+    if body.referral_code:
+        ref_user = await db.users.find_one({"referral_code": body.referral_code.upper().strip()})
+        if ref_user:
+            referred_by = str(ref_user["_id"])
+
     doc = {
         "email": email,
         "name": body.name.strip(),
@@ -223,10 +236,48 @@ async def register(body: RegisterIn, response: Response):
         "plan_status": "trial",
         "trial_ends_at": trial_end.isoformat(),
         "plan_expires_at": None,
+        "referral_code": referral_code,
+        "referred_by": referred_by,
+        "referral_reward_granted": False,
         "created_at": now.isoformat(),
     }
     result = await db.users.insert_one(doc)
     uid = str(result.inserted_id)
+
+    # Grant referrer +30 Pro days immediately upon successful signup
+    if referred_by:
+        try:
+            ref_user_doc = await db.users.find_one({"_id": ObjectId(referred_by)})
+            if ref_user_doc:
+                state = _compute_plan_state(ref_user_doc)
+                base = now
+                if state.get("is_pro") and state.get("plan_expires_at"):
+                    try:
+                        ex = datetime.fromisoformat(state["plan_expires_at"].replace("Z", "+00:00"))
+                        if ex > now:
+                            base = ex
+                    except Exception:
+                        pass
+                new_expires = base + timedelta(days=30)
+                await db.users.update_one(
+                    {"_id": ObjectId(referred_by)},
+                    {"$set": {
+                        "plan": "pro",
+                        "plan_status": "active",
+                        "plan_expires_at": new_expires.isoformat(),
+                    },
+                     "$inc": {"referral_count": 1}},
+                )
+                await db.referral_events.insert_one({
+                    "referrer_id": referred_by,
+                    "referred_user_id": uid,
+                    "referred_email": email,
+                    "days_granted": 30,
+                    "created_at": now.isoformat(),
+                })
+        except Exception:
+            logger.exception("referral grant failed")
+
     access = create_access_token(uid, email)
     refresh = create_refresh_token(uid)
     set_auth_cookies(response, access, refresh)
@@ -1292,6 +1343,169 @@ async def cashflow_positive(body: CashflowPositiveRequest):
 
 
 # ------------------------------------------------------------
+# Referrals
+# ------------------------------------------------------------
+@api_router.get("/referrals/me")
+async def my_referrals(user: dict = Depends(get_current_user)):
+    u = await db.users.find_one({"_id": ObjectId(user["id"])})
+    if not u:
+        raise HTTPException(404, "User not found")
+    if not u.get("referral_code"):
+        code = secrets.token_urlsafe(6).replace("_", "").replace("-", "")[:8].upper()
+        await db.users.update_one({"_id": u["_id"]}, {"$set": {"referral_code": code}})
+        u["referral_code"] = code
+    events = await db.referral_events.find({"referrer_id": user["id"]}, {"_id": 0}).sort("created_at", -1).to_list(100)
+    total_days = sum(e.get("days_granted", 0) for e in events)
+    return {
+        "referral_code": u["referral_code"],
+        "total_referrals": len(events),
+        "total_days_granted": total_days,
+        "events": events,
+        "reward_per_referral_days": 30,
+    }
+
+
+# ------------------------------------------------------------
+# Resale Estimator
+# ------------------------------------------------------------
+class ResaleEstimateRequest(BaseModel):
+    purchase_price: float
+    current_value: Optional[float] = None   # if known; else we'll project using appreciation
+    outstanding_loan: float = 0.0
+    years_held: float = 5.0
+    appreciation_pct: float = 6.0           # if current_value absent
+    maintenance_monthly: float = 0.0
+    property_tax_yearly: float = 0.0
+    rental_income_monthly: float = 0.0       # offsets carrying cost
+    broker_fee_pct: float = 1.0              # on sale price
+    ltcg_pct: float = 20.0                   # India LTCG on property (indexed) ~20%
+    target_profit_inr: float = 500000.0
+
+
+@api_router.post("/calc/resale-estimate")
+async def resale_estimate(body: ResaleEstimateRequest):
+    years = max(body.years_held, 0.01)
+    projected_value = body.current_value if body.current_value else body.purchase_price * ((1 + body.appreciation_pct / 100) ** years)
+
+    # carrying costs already borne
+    monthly_costs = body.maintenance_monthly + body.property_tax_yearly / 12
+    total_carry = monthly_costs * 12 * years
+    total_rent = body.rental_income_monthly * 12 * years
+    net_carry = total_carry - total_rent  # positive = out-of-pocket, negative = net-positive
+
+    # Breakeven: sale_price that zeroes out total capital deployed
+    # proceeds_net = sale_price * (1 - broker/100) - outstanding_loan - ltcg_on_gain
+    # total_deployed = (purchase_price - loan_originally) + net_carry  (approx; use purchase_price + net_carry - loan_paid_down)
+    # For simplicity: break-even = purchase_price + net_carry after tax + broker
+    # We solve for S such that S*(1-b) - loan - max(0, S - purchase_price)*ltcg = purchase_price + net_carry
+    b = body.broker_fee_pct / 100
+    ltcg = body.ltcg_pct / 100
+    loan = body.outstanding_loan
+    P = body.purchase_price
+    nc = net_carry
+    target_profit = body.target_profit_inr
+
+    def _net_proceeds(S):
+        gain = max(S - P, 0)
+        tax = gain * ltcg
+        return S * (1 - b) - loan - tax
+
+    def _solve_for_target_net(target):
+        # Target: _net_proceeds(S) - nc - (P - loan_paid_off_approx) >= target
+        # We simplify: user wants "money in hand after everything" = net proceeds - net_carry
+        # target = net_proceeds - net_carry  → net_proceeds = target + net_carry
+        target_np = target + nc
+        # bisection on S in [0, P*20]
+        lo, hi = 0.0, max(P * 20, 1e9)
+        for _ in range(60):
+            mid = (lo + hi) / 2
+            if _net_proceeds(mid) < target_np:
+                lo = mid
+            else:
+                hi = mid
+        return hi
+
+    breakeven_price = _solve_for_target_net(0.0)
+    target_price = _solve_for_target_net(target_profit)
+
+    projected_np = _net_proceeds(projected_value)
+    projected_net_after_carry = projected_np - nc
+    implied_annual_return = 0.0
+    if P > 0 and years > 0:
+        # CAGR on net-to-pocket vs capital invested (approx: down_payment = P - (loan_originally≈loan))
+        capital_invested = max(P - loan, 1)  # rough proxy
+        if projected_net_after_carry > 0:
+            implied_annual_return = ((projected_net_after_carry / capital_invested) ** (1 / years) - 1) * 100 if capital_invested > 0 else 0
+
+    return {
+        "projected_sale_price": round(projected_value, 2),
+        "projected_gross_proceeds": round(projected_value * (1 - b), 2),
+        "projected_net_proceeds_after_loan_and_tax": round(projected_np, 2),
+        "projected_net_in_hand": round(projected_net_after_carry, 2),
+        "breakeven_sale_price": round(breakeven_price, 2),
+        "target_profit_sale_price": round(target_price, 2),
+        "total_carrying_cost": round(total_carry, 2),
+        "total_rental_income": round(total_rent, 2),
+        "net_carrying_cost": round(net_carry, 2),
+        "implied_annual_return_pct": round(implied_annual_return, 2),
+        "assumptions": {
+            "broker_fee_pct": body.broker_fee_pct,
+            "ltcg_pct": body.ltcg_pct,
+            "years_held": body.years_held,
+        },
+    }
+
+
+# ------------------------------------------------------------
+# Loan Optimizer — sweep down_payment to find cashflow sweet spot
+# ------------------------------------------------------------
+class LoanOptimizerRequest(BaseModel):
+    property_price: float
+    monthly_rent: float
+    loan_rate: float = 8.5
+    loan_tenure_years: int = 20
+    maintenance_monthly: float = 2000.0
+    property_tax_yearly: float = 0.0
+
+
+@api_router.post("/calc/loan-optimizer")
+async def loan_optimizer(body: LoanOptimizerRequest):
+    costs_monthly = body.maintenance_monthly + body.property_tax_yearly / 12
+    grid = []
+    for pct in range(5, 101, 5):
+        dp = body.property_price * pct / 100
+        loan = body.property_price - dp
+        emi = _emi(loan, body.loan_rate, body.loan_tenure_years)
+        cashflow = body.monthly_rent - emi - costs_monthly
+        # simple ROI proxy: annual cashflow / dp
+        annual_cashflow = cashflow * 12
+        roi = (annual_cashflow / dp * 100) if dp > 0 else 0
+        grid.append({
+            "down_payment_pct": pct,
+            "down_payment": round(dp, 2),
+            "loan": round(loan, 2),
+            "emi": round(emi, 2),
+            "monthly_cashflow": round(cashflow, 2),
+            "annual_cashflow": round(annual_cashflow, 2),
+            "cash_on_cash_return_pct": round(roi, 2),
+        })
+
+    # find sweet spots
+    neutral = next((g for g in grid if g["monthly_cashflow"] >= 0), None)
+    best_positive = max(grid, key=lambda g: g["monthly_cashflow"])
+    best_coc = max([g for g in grid if g["down_payment"] > 0], key=lambda g: g["cash_on_cash_return_pct"], default=None)
+
+    return {
+        "grid": grid,
+        "cashflow_neutral_min_dp_pct": neutral["down_payment_pct"] if neutral else None,
+        "cashflow_neutral": neutral,
+        "max_cashflow": best_positive,
+        "best_cash_on_cash_return": best_coc,
+        "costs_monthly": round(costs_monthly, 2),
+    }
+
+
+# ------------------------------------------------------------
 # Billing / Razorpay
 # ------------------------------------------------------------
 PLANS = {
@@ -1604,7 +1818,7 @@ class VsInvestmentsRequest(BaseModel):
 
 @api_router.post("/portfolio/vs-investments")
 async def portfolio_vs_investments(body: VsInvestmentsRequest, user: dict = Depends(get_current_user)):
-    q = {"user_id": user["id"], "status": "owned"}
+    q = {"user_id": user["id"], "status": {"$in": ["owned", "sold"]}}
     if body.owned_ids:
         q["id"] = {"$in": body.owned_ids}
     props = await db.properties.find(q, {"_id": 0}).to_list(500)
@@ -1624,12 +1838,12 @@ async def portfolio_vs_investments(body: VsInvestmentsRequest, user: dict = Depe
 
     returns = {**DEFAULT_MARKET_RETURNS, **(body.returns or {})}
 
-    # for each property, we have purchase_price at purchase_year and current_value at current_year
-    # for each year between, interpolate linearly for property value
-    # for each alternative: cumulative invested (purchase prices staggered by their purchase year) grown at CAGR
     series = []
+    total_rental_accumulated = 0.0
+    prev_year = earliest_year - 1
     for year in range(earliest_year, current_year + 1):
         prop_value = 0.0
+        rental_this_year = 0.0
         alt_values = {k: 0.0 for k in returns.keys()}
 
         for p in props:
@@ -1637,28 +1851,56 @@ async def portfolio_vs_investments(body: VsInvestmentsRequest, user: dict = Depe
             if year < pyear:
                 continue
             purchase_price = p.get("purchase_price") or p.get("price") or 0
-            current_value = p.get("current_value") or purchase_price
-            span = max(current_year - pyear, 1)
-            ratio = min((year - pyear) / span, 1.0)
-            pv = purchase_price + (current_value - purchase_price) * ratio
-            prop_value += pv
+            # Property value contribution — different for owned vs sold
+            if p.get("status") == "sold" and p.get("sold_date"):
+                syear = _yr(p["sold_date"])
+                sold_price = p.get("sold_price") or purchase_price
+                if year < syear:
+                    span = max(syear - pyear, 1)
+                    ratio = (year - pyear) / span
+                    pv = purchase_price + (sold_price - purchase_price) * ratio
+                    prop_value += pv
+                    # rental for owned-during-hold period only if marked rented historically — unknown, skip unless flag
+                else:
+                    # property realized — carry sold_price forward as "cash"
+                    prop_value += sold_price
+            else:
+                current_value = p.get("current_value") or purchase_price
+                span = max(current_year - pyear, 1)
+                ratio = min((year - pyear) / span, 1.0)
+                pv = purchase_price + (current_value - purchase_price) * ratio
+                prop_value += pv
+                # rental income (annual) if actively rented
+                if p.get("rented") and p.get("monthly_rent_income"):
+                    rental_this_year += p["monthly_rent_income"] * 12
 
+            # Alt classes: invested staggered at purchase_year
             years_elapsed = year - pyear
             for k, rate in returns.items():
                 alt_values[k] += purchase_price * ((1 + rate / 100) ** years_elapsed)
 
-        row = {"year": year, "property": round(prop_value, 2)}
+        total_rental_accumulated += rental_this_year
+        prop_plus_rental = prop_value + total_rental_accumulated
+
+        row = {
+            "year": year,
+            "property": round(prop_value, 2),
+            "property_plus_rental": round(prop_plus_rental, 2),
+            "rental_accumulated": round(total_rental_accumulated, 2),
+        }
         for k, v in alt_values.items():
             row[k] = round(v, 2)
         series.append(row)
+        prev_year = year
 
-    # summary
     last = series[-1] if series else {}
     total_invested = sum((p.get("purchase_price") or p.get("price") or 0) for p in props)
     summary = {
         "total_invested": round(total_invested, 2),
         "property_current": last.get("property", 0),
-        "property_gain_pct": round((last.get("property", 0) - total_invested) / total_invested * 100, 2) if total_invested else 0,
+        "property_plus_rental_current": last.get("property_plus_rental", 0),
+        "rental_income_total": round(total_rental_accumulated, 2),
+        "property_gain_pct": round((last.get("property_plus_rental", 0) - total_invested) / total_invested * 100, 2) if total_invested else 0,
         "comparisons": [],
     }
     for k in returns.keys():
@@ -1667,12 +1909,16 @@ async def portfolio_vs_investments(body: VsInvestmentsRequest, user: dict = Depe
             "asset": k,
             "final": final,
             "gain_pct": round((final - total_invested) / total_invested * 100, 2) if total_invested else 0,
-            "delta_vs_property": round(final - last.get("property", 0), 2),
+            "delta_vs_property": round(final - last.get("property_plus_rental", 0), 2),
             "rate": returns[k],
         })
     summary["comparisons"].sort(key=lambda x: x["final"], reverse=True)
-    winners = sorted([("Property", last.get("property", 0))] + [(c["asset"], c["final"]) for c in summary["comparisons"]],
-                     key=lambda x: x[1], reverse=True)
+    winners = sorted(
+        [("Property + Rental", last.get("property_plus_rental", 0))]
+        + [(c["asset"], c["final"]) for c in summary["comparisons"]],
+        key=lambda x: x[1],
+        reverse=True,
+    )
     summary["winner"] = winners[0][0] if winners else None
     summary["winner_value"] = winners[0][1] if winners else 0
 

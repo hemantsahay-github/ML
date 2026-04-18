@@ -2,6 +2,7 @@ import { useEffect, useState, useRef } from "react";
 import api, { formatApiErrorDetail } from "../lib/api";
 import { toast } from "sonner";
 import { PaperPlaneTilt, Sparkle, User } from "@phosphor-icons/react";
+import Disclaimer from "../components/Disclaimer";
 
 const seedPrompts = [
   "Given my properties, which one should I actually buy?",
@@ -71,6 +72,9 @@ export default function Advisor() {
           Claude Sonnet 4.5 with your property data in hand. Ask for a verdict, a rent-vs-buy
           take, or a reality check.
         </p>
+      </div>
+      <div className="mb-6 max-w-2xl">
+        <Disclaimer variant="compact" />
       </div>
 
       {messages.length === 0 && (

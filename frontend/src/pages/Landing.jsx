@@ -228,6 +228,12 @@ export default function Landing() {
             <a href="#how" className="hover:text-foreground">
               Method
             </a>
+            <Link to="/pricing" className="hover:text-foreground">
+              Pricing
+            </Link>
+            <Link to="/disclaimer" className="hover:text-foreground" data-testid="landing-disclaimer-link">
+              Disclaimer
+            </Link>
             <Link to="/login" className="hover:text-foreground">
               Sign in
             </Link>

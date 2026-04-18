@@ -2,6 +2,7 @@ import { useState } from "react";
 import api, { formatApiErrorDetail } from "../lib/api";
 import { toast } from "sonner";
 import { inr, inrFull } from "../lib/format";
+import Disclaimer from "../components/Disclaimer";
 import {
   LineChart,
   Line,
@@ -20,6 +21,8 @@ const tabs = [
   { id: "rentbuy", label: "Rent vs Buy" },
   { id: "invest", label: "Property vs MF vs Equity" },
   { id: "cashflow", label: "Cashflow-positive finder" },
+  { id: "resale", label: "Resale estimator" },
+  { id: "optimizer", label: "Loan optimizer" },
 ];
 
 export default function Calculators() {
@@ -30,12 +33,12 @@ export default function Calculators() {
         <div className="eyebrow mb-2">Calculators</div>
         <h1 className="font-serif text-5xl">The brutal math.</h1>
         <p className="text-muted-foreground mt-3 max-w-xl">
-          EMI schedules, rent-vs-buy breakevens, property vs markets, and the maximum
-          property price at which rent still beats EMI.
+          EMI, rent-vs-buy, property vs markets, cashflow-positive finder, resale
+          estimator and a loan optimizer. Every assumption is editable.
         </p>
       </div>
 
-      <div className="border-b hairline mb-8">
+      <div className="border-b hairline mb-8 flex flex-wrap">
         {tabs.map((t) => (
           <button
             key={t.id}
@@ -56,6 +59,226 @@ export default function Calculators() {
       {tab === "rentbuy" && <RentBuyCalc />}
       {tab === "invest" && <InvestCalc />}
       {tab === "cashflow" && <CashflowPositiveCalc />}
+      {tab === "resale" && <ResaleEstimator />}
+      {tab === "optimizer" && <LoanOptimizer />}
+
+      <Disclaimer />
+    </div>
+  );
+}
+
+/* --------------------- Resale estimator --------------------- */
+function ResaleEstimator() {
+  const [form, setForm] = useState({
+    purchase_price: 7500000,
+    current_value: 9500000,
+    outstanding_loan: 4800000,
+    years_held: 4,
+    appreciation_pct: 6,
+    maintenance_monthly: 3500,
+    property_tax_yearly: 15000,
+    rental_income_monthly: 28000,
+    broker_fee_pct: 1,
+    ltcg_pct: 20,
+    target_profit_inr: 500000,
+  });
+  const [res, setRes] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const run = async () => {
+    setLoading(true);
+    try {
+      const { data } = await api.post("/calc/resale-estimate", form);
+      setRes(data);
+    } catch (e) {
+      toast.error(formatApiErrorDetail(e.response?.data?.detail));
+    } finally {
+      setLoading(false);
+    }
+  };
+  return (
+    <div className="grid lg:grid-cols-[380px_1fr] gap-8">
+      <div className="card-flat p-6 space-y-2">
+        <NumberField label="Purchase price (₹)" value={form.purchase_price} onChange={(v) => setForm({ ...form, purchase_price: v })} />
+        <NumberField label="Current value (₹) — optional" value={form.current_value} onChange={(v) => setForm({ ...form, current_value: v })} />
+        <NumberField label="Outstanding loan (₹)" value={form.outstanding_loan} onChange={(v) => setForm({ ...form, outstanding_loan: v })} />
+        <div className="grid grid-cols-2 gap-3">
+          <NumberField label="Years held" value={form.years_held} step="0.5" onChange={(v) => setForm({ ...form, years_held: v })} />
+          <NumberField label="Appr. % p.a." value={form.appreciation_pct} step="0.1" onChange={(v) => setForm({ ...form, appreciation_pct: v })} />
+        </div>
+        <NumberField label="Maint / month (₹)" value={form.maintenance_monthly} onChange={(v) => setForm({ ...form, maintenance_monthly: v })} />
+        <NumberField label="Tax / year (₹)" value={form.property_tax_yearly} onChange={(v) => setForm({ ...form, property_tax_yearly: v })} />
+        <NumberField label="Rental income ₹/mo" value={form.rental_income_monthly} onChange={(v) => setForm({ ...form, rental_income_monthly: v })} />
+        <div className="grid grid-cols-2 gap-3">
+          <NumberField label="Broker fee %" value={form.broker_fee_pct} step="0.1" onChange={(v) => setForm({ ...form, broker_fee_pct: v })} />
+          <NumberField label="LTCG %" value={form.ltcg_pct} step="0.5" onChange={(v) => setForm({ ...form, ltcg_pct: v })} />
+        </div>
+        <NumberField label="Target profit (₹)" value={form.target_profit_inr} onChange={(v) => setForm({ ...form, target_profit_inr: v })} />
+        <button onClick={run} disabled={loading} className="btn-primary w-full py-2.5 text-sm mt-3" data-testid="resale-run-button">
+          {loading ? "Computing…" : "Estimate resale"}
+        </button>
+      </div>
+      <div>
+        {!res ? (
+          <div className="card-flat p-8 text-muted-foreground">
+            Tell Estima what you paid, the loan still outstanding, and the carrying costs. We&apos;ll compute the sale price at which you exit <span className="text-foreground">whole</span>, and the price that nets you your target profit — after broker fees and LTCG.
+          </div>
+        ) : (
+          <div className="space-y-6" data-testid="resale-result">
+            <div className="grid md:grid-cols-2 gap-4">
+              <Metric label="Breakeven sale price" value={inrFull(res.breakeven_sale_price)} />
+              <Metric label={`For target profit`} value={inrFull(res.target_profit_sale_price)} accent="good" />
+            </div>
+            <div className="grid md:grid-cols-3 gap-4">
+              <Metric label="Projected sale (at appr.)" value={inr(res.projected_sale_price)} />
+              <Metric label="Projected net in hand" value={inr(res.projected_net_in_hand)} />
+              <Metric label="Implied CAGR" value={`${res.implied_annual_return_pct}%`} />
+            </div>
+            <div className="card-flat p-6">
+              <div className="eyebrow mb-3">Cost breakdown during hold</div>
+              <div className="grid md:grid-cols-3 gap-3 text-sm">
+                <LabRow label="Total carrying cost" v={inr(res.total_carrying_cost)} />
+                <LabRow label="Total rental income" v={inr(res.total_rental_income)} accent="good" />
+                <LabRow label="Net carrying cost" v={inr(res.net_carrying_cost)} accent={res.net_carrying_cost > 0 ? "bad" : "good"} />
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* --------------------- Loan optimizer --------------------- */
+function LoanOptimizer() {
+  const [form, setForm] = useState({
+    property_price: 8000000,
+    monthly_rent: 32000,
+    loan_rate: 8.5,
+    loan_tenure_years: 20,
+    maintenance_monthly: 3500,
+    property_tax_yearly: 12000,
+  });
+  const [res, setRes] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const run = async () => {
+    setLoading(true);
+    try {
+      const { data } = await api.post("/calc/loan-optimizer", form);
+      setRes(data);
+    } catch (e) {
+      toast.error(formatApiErrorDetail(e.response?.data?.detail));
+    } finally {
+      setLoading(false);
+    }
+  };
+  return (
+    <div className="grid lg:grid-cols-[380px_1fr] gap-8">
+      <div className="card-flat p-6 space-y-2">
+        <NumberField label="Property price (₹)" value={form.property_price} onChange={(v) => setForm({ ...form, property_price: v })} />
+        <NumberField label="Monthly rent (₹)" value={form.monthly_rent} onChange={(v) => setForm({ ...form, monthly_rent: v })} />
+        <div className="grid grid-cols-2 gap-3">
+          <NumberField label="Loan %" value={form.loan_rate} step="0.1" onChange={(v) => setForm({ ...form, loan_rate: v })} />
+          <NumberField label="Tenure" value={form.loan_tenure_years} onChange={(v) => setForm({ ...form, loan_tenure_years: v })} />
+        </div>
+        <NumberField label="Maint / month (₹)" value={form.maintenance_monthly} onChange={(v) => setForm({ ...form, maintenance_monthly: v })} />
+        <NumberField label="Tax / year (₹)" value={form.property_tax_yearly} onChange={(v) => setForm({ ...form, property_tax_yearly: v })} />
+        <button onClick={run} disabled={loading} className="btn-primary w-full py-2.5 text-sm mt-3" data-testid="optimizer-run-button">
+          {loading ? "Crunching…" : "Find sweet spot"}
+        </button>
+      </div>
+      <div>
+        {!res ? (
+          <div className="card-flat p-8 text-muted-foreground">
+            Sweep every down-payment % from 5 to 100. Estima surfaces the cashflow-neutral breakeven, the maximum-cashflow setup, and the best cash-on-cash return for your capital.
+          </div>
+        ) : (
+          <div className="space-y-6" data-testid="optimizer-result">
+            <div className="grid md:grid-cols-3 gap-4">
+              <Highlight
+                label="Cashflow-neutral"
+                value={res.cashflow_neutral_min_dp_pct ? `${res.cashflow_neutral_min_dp_pct}% down` : "Not within range"}
+                sub={res.cashflow_neutral ? `DP ${inr(res.cashflow_neutral.down_payment)} · EMI ${inr(res.cashflow_neutral.emi)}` : ""}
+                accent="primary"
+              />
+              <Highlight
+                label="Max monthly cashflow"
+                value={inr(res.max_cashflow.monthly_cashflow)}
+                sub={`at ${res.max_cashflow.down_payment_pct}% down`}
+                accent="good"
+              />
+              {res.best_cash_on_cash_return && (
+                <Highlight
+                  label="Best cash-on-cash"
+                  value={`${res.best_cash_on_cash_return.cash_on_cash_return_pct}%`}
+                  sub={`at ${res.best_cash_on_cash_return.down_payment_pct}% down`}
+                  accent="good"
+                />
+              )}
+            </div>
+            <div className="card-flat overflow-x-auto">
+              <div className="p-4 eyebrow border-b hairline">Down-payment sweep</div>
+              <table className="w-full text-sm">
+                <thead className="text-left text-muted-foreground border-b hairline">
+                  <tr>
+                    {["DP %", "DP", "Loan", "EMI", "Cashflow / mo", "CoC return"].map((h) => (
+                      <th key={h} className="p-3 font-normal eyebrow">{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {res.grid.map((g, i) => (
+                    <tr
+                      key={i}
+                      className={`border-b hairline last:border-0 ${
+                        res.cashflow_neutral && g.down_payment_pct === res.cashflow_neutral.down_payment_pct
+                          ? "bg-[hsl(var(--muted))]"
+                          : ""
+                      }`}
+                      data-testid={`optimizer-row-${g.down_payment_pct}`}
+                    >
+                      <td className="p-3 num-metric">{g.down_payment_pct}%</td>
+                      <td className="p-3 text-xs">{inr(g.down_payment)}</td>
+                      <td className="p-3 text-xs">{inr(g.loan)}</td>
+                      <td className="p-3 text-xs">{inr(g.emi)}</td>
+                      <td className={`p-3 num-metric ${g.monthly_cashflow >= 0 ? "text-[hsl(var(--secondary))]" : "text-destructive"}`}>
+                        {g.monthly_cashflow >= 0 ? "+" : ""}
+                        {inr(g.monthly_cashflow)}
+                      </td>
+                      <td className="p-3 text-xs">{g.cash_on_cash_return_pct}%</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function Highlight({ label, value, sub, accent }) {
+  const color =
+    accent === "primary"
+      ? "text-[hsl(var(--primary))]"
+      : accent === "good"
+        ? "text-[hsl(var(--secondary))]"
+        : "text-foreground";
+  return (
+    <div className="card-flat p-5">
+      <div className="eyebrow mb-2">{label}</div>
+      <div className={`num-metric text-2xl ${color}`}>{value}</div>
+      {sub && <div className="text-xs text-muted-foreground mt-1">{sub}</div>}
+    </div>
+  );
+}
+
+function LabRow({ label, v, accent }) {
+  const color = accent === "good" ? "text-[hsl(var(--secondary))]" : accent === "bad" ? "text-destructive" : "text-foreground";
+  return (
+    <div className="flex justify-between p-3 border hairline">
+      <span className="text-muted-foreground">{label}</span>
+      <span className={`num-metric ${color}`}>{v}</span>
     </div>
   );
 }

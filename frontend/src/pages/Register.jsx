@@ -1,15 +1,17 @@
 import { useState, useEffect } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 import { toast } from "sonner";
-import { UserPlus } from "@phosphor-icons/react";
+import { UserPlus, Gift } from "@phosphor-icons/react";
 
 export default function Register() {
   const { register, user } = useAuth();
   const nav = useNavigate();
+  const [params] = useSearchParams();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [name, setName] = useState("");
+  const [referralCode, setReferralCode] = useState(params.get("ref") || "");
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState("");
 
@@ -25,7 +27,7 @@ export default function Register() {
       return;
     }
     setLoading(true);
-    const res = await register(email.trim().toLowerCase(), password, name.trim());
+    const res = await register(email.trim().toLowerCase(), password, name.trim(), referralCode.trim() || null);
     setLoading(false);
     if (!res.ok) {
       setErr(res.error);
@@ -81,6 +83,22 @@ export default function Register() {
               className="input-dark w-full px-4 py-3"
               placeholder="at least 6 characters"
               data-testid="register-password-input"
+            />
+          </label>
+
+          <label className="block mb-6">
+            <span className="eyebrow block mb-2 flex items-center gap-1.5">
+              <Gift size={11} weight="duotone" className="text-[hsl(var(--secondary))]" />
+              Invite code (optional)
+            </span>
+            <input
+              type="text"
+              value={referralCode}
+              onChange={(e) => setReferralCode(e.target.value.toUpperCase())}
+              className="input-dark w-full px-4 py-3 uppercase tracking-widest font-mono"
+              placeholder="e.g. AFHYSYO"
+              data-testid="register-referral-input"
+              maxLength={12}
             />
           </label>
 

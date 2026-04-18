@@ -16,6 +16,8 @@ import Portfolio from "./pages/Portfolio";
 import Pricing from "./pages/Pricing";
 import Admin from "./pages/Admin";
 import Guide from "./pages/Guide";
+import Referrals from "./pages/Referrals";
+import DisclaimerPage from "./pages/DisclaimerPage";
 import SharedReport from "./pages/SharedReport";
 
 function App() {
@@ -39,6 +41,7 @@ function App() {
             <Route path="/login" element={<Login />} />
             <Route path="/register" element={<Register />} />
             <Route path="/pricing" element={<Pricing />} />
+            <Route path="/disclaimer" element={<DisclaimerPage />} />
             <Route path="/share/:id" element={<SharedReport />} />
             <Route
               path="/app"
@@ -55,6 +58,7 @@ function App() {
               <Route path="calculators" element={<Calculators />} />
               <Route path="advisor" element={<Advisor />} />
               <Route path="guide" element={<Guide />} />
+              <Route path="referrals" element={<Referrals />} />
               <Route path="admin" element={<Admin />} />
             </Route>
             <Route path="*" element={<Navigate to="/" replace />} />

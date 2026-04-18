@@ -15,6 +15,7 @@ import {
   Lightning,
   BookOpen,
   Question,
+  Gift,
 } from "@phosphor-icons/react";
 
 function daysLeft(iso) {
@@ -48,6 +49,7 @@ export default function AppShell() {
     { to: "/app/compare", label: "Compare", icon: Scales, id: "nav-compare" },
     { to: "/app/calculators", label: "Calculators", icon: Calculator, id: "nav-calculators" },
     { to: "/app/advisor", label: "AI Advisor", icon: Sparkle, id: "nav-advisor", pro: true },
+    { to: "/app/referrals", label: "Invites", icon: Gift, id: "nav-referrals" },
     { to: "/app/guide", label: "Guide", icon: BookOpen, id: "nav-guide" },
   ];
   const nav = user?.role === "admin"

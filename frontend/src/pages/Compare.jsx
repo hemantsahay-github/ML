@@ -4,6 +4,7 @@ import { toast } from "sonner";
 import { inr } from "../lib/format";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Legend, CartesianGrid, RadarChart, Radar, PolarGrid, PolarAngleAxis, PolarRadiusAxis } from "recharts";
 import { Trophy, Scales, FileCsv, FilePdf, Share } from "@phosphor-icons/react";
+import Disclaimer from "../components/Disclaimer";
 
 const defaultWeights = {
   location: 0.25,
@@ -327,6 +328,7 @@ export default function Compare() {
           )}
         </>
       )}
+      <Disclaimer />
     </div>
   );
 }
