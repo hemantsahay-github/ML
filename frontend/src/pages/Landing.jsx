@@ -199,6 +199,84 @@ export default function Landing() {
         </div>
       </section>
 
+      {/* Demo videos */}
+      <section className="border-t hairline">
+        <div className="max-w-7xl mx-auto px-6 py-24">
+          <div className="max-w-2xl mb-12">
+            <div className="eyebrow mb-4">See it in action</div>
+            <h2 className="font-serif text-4xl md:text-5xl leading-tight">
+              90 seconds to see how Estima decides.
+            </h2>
+            <p className="text-muted-foreground mt-4">
+              Short walkthroughs of every flow — before you sign up, before you commit.
+            </p>
+          </div>
+          <div className="grid md:grid-cols-2 gap-6">
+            {[
+              {
+                title: "Compare 3 flats in under a minute",
+                length: "0:52",
+                youtube: "dQw4w9WgXcQ",
+                body: "From empty ledger to a weighted winner — watch the side-by-side score reveal itself.",
+              },
+              {
+                title: "Rent vs buy, with real math",
+                length: "1:14",
+                youtube: "dQw4w9WgXcQ",
+                body: "Breakeven year, net worth trajectories, and why this number often surprises you.",
+              },
+              {
+                title: "Property vs mutual funds vs equity",
+                length: "1:02",
+                youtube: "dQw4w9WgXcQ",
+                body: "Run your property against Nifty, gold, and MF CAGRs. See who wins at 10 years.",
+              },
+              {
+                title: "The AI advisor takes your call",
+                length: "0:48",
+                youtube: "dQw4w9WgXcQ",
+                body: "Claude Sonnet 4.5 reading your numbers and returning a verdict in plain language.",
+              },
+            ].map((v, i) => (
+              <a
+                key={i}
+                href={`https://www.youtube.com/watch?v=${v.youtube}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                data-testid={`demo-video-${i}`}
+                className="card-flat overflow-hidden group hover:border-[hsl(var(--secondary))] transition"
+              >
+                <div className="aspect-video relative bg-[hsl(var(--muted))] overflow-hidden">
+                  <img
+                    src={`https://img.youtube.com/vi/${v.youtube}/maxresdefault.jpg`}
+                    onError={(e) => {
+                      e.currentTarget.style.display = "none";
+                    }}
+                    alt={v.title}
+                    className="w-full h-full object-cover opacity-70 group-hover:opacity-100 transition"
+                  />
+                  <div className="absolute inset-0 bg-gradient-to-t from-background to-transparent" />
+                  <div className="absolute inset-0 flex items-center justify-center">
+                    <div className="h-16 w-16 rounded-full bg-[hsl(var(--primary))] flex items-center justify-center text-white">
+                      <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor">
+                        <path d="M8 5v14l11-7z" />
+                      </svg>
+                    </div>
+                  </div>
+                  <div className="absolute bottom-3 right-3 bg-background/80 px-2 py-0.5 text-[11px] font-mono">
+                    {v.length}
+                  </div>
+                </div>
+                <div className="p-6">
+                  <div className="font-serif text-xl mb-2">{v.title}</div>
+                  <div className="text-sm text-muted-foreground">{v.body}</div>
+                </div>
+              </a>
+            ))}
+          </div>
+        </div>
+      </section>
+
       {/* CTA */}
       <section className="border-t hairline">
         <div className="max-w-4xl mx-auto px-6 py-24 text-center">

@@ -23,6 +23,7 @@ const tabs = [
   { id: "cashflow", label: "Cashflow-positive finder" },
   { id: "resale", label: "Resale estimator" },
   { id: "optimizer", label: "Loan optimizer" },
+  { id: "builder", label: "Builder plan" },
 ];
 
 export default function Calculators() {
@@ -61,8 +62,98 @@ export default function Calculators() {
       {tab === "cashflow" && <CashflowPositiveCalc />}
       {tab === "resale" && <ResaleEstimator />}
       {tab === "optimizer" && <LoanOptimizer />}
+      {tab === "builder" && <BuilderPlan />}
 
       <Disclaimer />
+    </div>
+  );
+}
+
+/* --------------------- Builder payment plan --------------------- */
+function BuilderPlan() {
+  const [form, setForm] = useState({
+    property_price: 9000000,
+    possession_months: 36,
+    loan_rate: 8.5,
+    loan_tenure_years: 20,
+    opportunity_return: 11,
+  });
+  const [res, setRes] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const run = async () => {
+    setLoading(true);
+    try {
+      const { data } = await api.post("/calc/builder-plan", form);
+      setRes(data);
+    } catch (e) {
+      toast.error(formatApiErrorDetail(e.response?.data?.detail));
+    } finally {
+      setLoading(false);
+    }
+  };
+  return (
+    <div className="grid lg:grid-cols-[380px_1fr] gap-8">
+      <div className="card-flat p-6 space-y-2">
+        <NumberField label="Property price (₹)" value={form.property_price} onChange={(v) => setForm({ ...form, property_price: v })} />
+        <NumberField label="Months to possession" value={form.possession_months} onChange={(v) => setForm({ ...form, possession_months: v })} />
+        <div className="grid grid-cols-2 gap-3">
+          <NumberField label="Loan %" value={form.loan_rate} step="0.1" onChange={(v) => setForm({ ...form, loan_rate: v })} />
+          <NumberField label="Tenure" value={form.loan_tenure_years} onChange={(v) => setForm({ ...form, loan_tenure_years: v })} />
+        </div>
+        <NumberField label="Opportunity return % (MF)" value={form.opportunity_return} step="0.1" onChange={(v) => setForm({ ...form, opportunity_return: v })} />
+        <button onClick={run} disabled={loading} className="btn-primary w-full py-2.5 text-sm mt-3" data-testid="builder-run-button">
+          {loading ? "Computing…" : "Compare plans"}
+        </button>
+      </div>
+      <div>
+        {!res ? (
+          <div className="card-flat p-8 text-muted-foreground">
+            Builders pitch four flavours of payment plans: <span className="text-foreground">CLP</span> (construction-linked), <span className="text-foreground">10:90</span>, <span className="text-foreground">20:80</span>, and <span className="text-foreground">subvention</span> (pre-EMI paid by builder). Estima computes the effective total cost of each including pre-EMI and the opportunity cost of idle cash, and declares the winner.
+          </div>
+        ) : (
+          <div className="space-y-6" data-testid="builder-result">
+            <div className="card-flat p-8 border-[hsl(var(--secondary))]">
+              <div className="eyebrow text-[hsl(var(--secondary))] mb-2">Best plan for you</div>
+              <div className="font-serif text-4xl">{res.winner_name}</div>
+              <div className="text-sm text-muted-foreground mt-2">Savings vs worst plan: {inr(res.savings_vs_worst)}</div>
+            </div>
+            <div className="grid md:grid-cols-2 gap-4">
+              {res.plans.map((p) => (
+                <div
+                  key={p.id}
+                  className={`card-flat p-6 ${p.id === res.winner ? "border-[hsl(var(--secondary))]" : ""}`}
+                  data-testid={`builder-plan-${p.id}`}
+                >
+                  <div className="font-serif text-2xl mb-1">{p.name}</div>
+                  <div className="text-xs text-muted-foreground mb-4">{p.description}</div>
+                  <div className="grid grid-cols-2 gap-3 text-sm">
+                    <Row label="Down payment" v={inr(p.down_payment)} />
+                    <Row label="Loan" v={inr(p.loan_amount)} />
+                    <Row label="Pre-EMI (builder)" v={inr(p.pre_emi_total - p.pre_emi_by_buyer)} accent="good" />
+                    <Row label="Pre-EMI (buyer)" v={inr(p.pre_emi_by_buyer)} accent={p.pre_emi_by_buyer > 0 ? "bad" : undefined} />
+                    <Row label="EMI post-possession" v={inr(p.monthly_emi_after_possession)} />
+                    <Row label="Opp. cost (idle cash)" v={inr(p.opportunity_cost_during_build)} />
+                  </div>
+                  <div className="mt-4 pt-4 border-t hairline flex justify-between items-center">
+                    <span className="eyebrow">Effective total cost</span>
+                    <span className={`num-metric text-xl ${p.id === res.winner ? "text-[hsl(var(--secondary))]" : ""}`}>{inr(p.effective_total_cost)}</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function Row({ label, v, accent }) {
+  const c = accent === "good" ? "text-[hsl(var(--secondary))]" : accent === "bad" ? "text-destructive" : "text-foreground";
+  return (
+    <div className="flex justify-between">
+      <span className="text-muted-foreground">{label}</span>
+      <span className={`num-metric ${c}`}>{v}</span>
     </div>
   );
 }

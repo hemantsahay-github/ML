@@ -2,7 +2,12 @@ import { useState, useEffect } from "react";
 import { Link, useNavigate, useLocation } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 import { toast } from "sonner";
-import { SignIn } from "@phosphor-icons/react";
+import { SignIn, GoogleLogo } from "@phosphor-icons/react";
+
+function googleLoginUrl() {
+  const redirect = encodeURIComponent(`${window.location.origin}/login`);
+  return `https://auth.emergentagent.com/?redirect=${redirect}`;
+}
 
 export default function Login() {
   const { login, user } = useAuth();
@@ -99,6 +104,20 @@ export default function Login() {
             <SignIn size={16} weight="bold" />
             {loading ? "Signing in…" : "Sign in"}
           </button>
+
+          <div className="my-6 flex items-center gap-4 text-[0.7rem] uppercase tracking-widest text-muted-foreground">
+            <div className="h-px flex-1 bg-[hsl(var(--border))]" />
+            or
+            <div className="h-px flex-1 bg-[hsl(var(--border))]" />
+          </div>
+
+          <a
+            href={googleLoginUrl()}
+            className="btn-ghost w-full py-3 inline-flex items-center justify-center gap-2 text-sm"
+            data-testid="login-google-button"
+          >
+            <GoogleLogo size={16} weight="bold" /> Continue with Google
+          </a>
 
           <div className="mt-8 text-sm text-muted-foreground">
             No account?{" "}

@@ -34,6 +34,8 @@ import hashlib
 import razorpay
 
 from city_presets import CITY_PRESETS
+import notifications as notify
+import requests as httpx_requests
 
 # ------------------------------------------------------------
 # Setup
@@ -275,6 +277,12 @@ async def register(body: RegisterIn, response: Response):
                     "days_granted": 30,
                     "created_at": now.isoformat(),
                 })
+                # Fire referral email
+                try:
+                    subj, html = notify.tpl_referral_reward(ref_user_doc.get("name", "there"), email, 30)
+                    notify.send_email(ref_user_doc["email"], subj, html)
+                except Exception:
+                    logger.exception("referral email failed")
         except Exception:
             logger.exception("referral grant failed")
 
@@ -282,6 +290,14 @@ async def register(body: RegisterIn, response: Response):
     refresh = create_refresh_token(uid)
     set_auth_cookies(response, access, refresh)
     doc["id"] = uid
+
+    # Fire welcome email (no-op if RESEND_API_KEY missing)
+    try:
+        subj, html = notify.tpl_welcome(doc["name"], TRIAL_DAYS)
+        notify.send_email(email, subj, html)
+    except Exception:
+        logger.exception("welcome email failed")
+
     return _user_out(doc)
 
 
@@ -1792,6 +1808,23 @@ async def admin_user_action(user_id: str, body: AdminActionIn, user: dict = Depe
         update["plan"] = "free"
         update["plan_status"] = "expired"
         update["plan_expires_at"] = None
+    elif body.action == "extend_trial":
+        # Extend trial by body.days from now (or from current trial end if still trialing)
+        now = datetime.now(timezone.utc)
+        current_trial = target.get("trial_ends_at")
+        base = now
+        if current_trial:
+            try:
+                te = datetime.fromisoformat(current_trial.replace("Z", "+00:00"))
+                if te > now:
+                    base = te
+            except Exception:
+                pass
+        new_end = base + timedelta(days=body.days)
+        update["plan"] = "pro"
+        update["plan_status"] = "trial"
+        update["trial_ends_at"] = new_end.isoformat()
+        update["plan_expires_at"] = None
     else:
         raise HTTPException(400, "Unknown action")
 
@@ -1928,6 +1961,480 @@ async def portfolio_vs_investments(body: VsInvestmentsRequest, user: dict = Depe
         "returns": returns,
         "summary": summary,
     }
+
+
+# ------------------------------------------------------------
+# Google Auth (Emergent-managed)
+# ------------------------------------------------------------
+class GoogleSessionIn(BaseModel):
+    session_id: str
+
+
+@api_router.post("/auth/google/session", response_model=UserOut)
+async def google_session(body: GoogleSessionIn, response: Response):
+    """Exchange Emergent session_id for user profile, create/merge our user, set JWT cookies."""
+    try:
+        r = httpx_requests.get(
+            "https://demobackend.emergentagent.com/auth/v1/env/oauth/session-data",
+            headers={"X-Session-ID": body.session_id},
+            timeout=10,
+        )
+        if r.status_code != 200:
+            raise HTTPException(401, "Invalid Google session")
+        data = r.json()
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("google session failed")
+        raise HTTPException(502, "Could not validate Google session")
+
+    email = (data.get("email") or "").lower().strip()
+    name = data.get("name") or email.split("@")[0]
+    picture = data.get("picture")
+    if not email:
+        raise HTTPException(400, "Google profile missing email")
+
+    now = datetime.now(timezone.utc)
+    existing = await db.users.find_one({"email": email})
+    if existing:
+        uid = str(existing["_id"])
+        updates = {"google_linked": True, "picture": picture}
+        await db.users.update_one({"_id": existing["_id"]}, {"$set": updates})
+        user_doc = {**existing, **updates, "id": uid}
+    else:
+        trial_end = now + timedelta(days=TRIAL_DAYS)
+        referral_code = secrets.token_urlsafe(6).replace("_", "").replace("-", "")[:8].upper()
+        while await db.users.find_one({"referral_code": referral_code}):
+            referral_code = secrets.token_urlsafe(6).upper()[:8]
+        doc = {
+            "email": email,
+            "name": name,
+            "password_hash": "",          # no password — google-only
+            "role": "user",
+            "plan": "pro",
+            "plan_status": "trial",
+            "trial_ends_at": trial_end.isoformat(),
+            "plan_expires_at": None,
+            "google_linked": True,
+            "picture": picture,
+            "referral_code": referral_code,
+            "created_at": now.isoformat(),
+        }
+        result = await db.users.insert_one(doc)
+        uid = str(result.inserted_id)
+        user_doc = {**doc, "id": uid}
+        try:
+            subj, html = notify.tpl_welcome(name, TRIAL_DAYS)
+            notify.send_email(email, subj, html)
+        except Exception:
+            logger.exception("google welcome email failed")
+
+    access = create_access_token(uid, email)
+    refresh = create_refresh_token(uid)
+    set_auth_cookies(response, access, refresh)
+    return _user_out(user_doc)
+
+
+# ------------------------------------------------------------
+# Tenants + Rent Receipts
+# ------------------------------------------------------------
+class TenantIn(BaseModel):
+    property_id: str
+    name: str
+    phone: Optional[str] = None
+    email: Optional[EmailStr] = None
+    monthly_rent: float = 0.0
+    deposit: float = 0.0
+    lease_start: Optional[str] = None   # ISO
+    lease_end: Optional[str] = None
+    notes: str = ""
+
+
+@api_router.get("/tenants")
+async def list_tenants(property_id: Optional[str] = None, user: dict = Depends(get_current_user)):
+    q = {"user_id": user["id"]}
+    if property_id:
+        q["property_id"] = property_id
+    return await db.tenants.find(q, {"_id": 0}).sort("created_at", -1).to_list(500)
+
+
+@api_router.post("/tenants")
+async def create_tenant(body: TenantIn, user: dict = Depends(get_current_user)):
+    # ensure property belongs to user
+    prop = await db.properties.find_one({"user_id": user["id"], "id": body.property_id}, {"_id": 0})
+    if not prop:
+        raise HTTPException(404, "Property not found")
+    doc = body.model_dump()
+    doc["id"] = str(uuid.uuid4())
+    doc["user_id"] = user["id"]
+    doc["property_name"] = prop["name"]
+    doc["created_at"] = datetime.now(timezone.utc).isoformat()
+    await db.tenants.insert_one(doc.copy())
+    doc.pop("_id", None)
+    return doc
+
+
+@api_router.put("/tenants/{tenant_id}")
+async def update_tenant(tenant_id: str, body: TenantIn, user: dict = Depends(get_current_user)):
+    existing = await db.tenants.find_one({"id": tenant_id, "user_id": user["id"]}, {"_id": 0})
+    if not existing:
+        raise HTTPException(404, "Tenant not found")
+    prop = await db.properties.find_one({"user_id": user["id"], "id": body.property_id}, {"_id": 0})
+    if not prop:
+        raise HTTPException(404, "Property not found")
+    data = body.model_dump()
+    data["property_name"] = prop["name"]
+    await db.tenants.update_one({"id": tenant_id, "user_id": user["id"]}, {"$set": data})
+    existing.update(data)
+    return existing
+
+
+@api_router.delete("/tenants/{tenant_id}")
+async def delete_tenant(tenant_id: str, user: dict = Depends(get_current_user)):
+    res = await db.tenants.delete_one({"id": tenant_id, "user_id": user["id"]})
+    if res.deleted_count == 0:
+        raise HTTPException(404, "Tenant not found")
+    return {"ok": True}
+
+
+class RentReceiptRequest(BaseModel):
+    tenant_id: str
+    month: str              # "April 2026"
+    amount: float
+    paid_on: Optional[str] = None   # ISO date
+    payment_mode: str = "Bank Transfer"
+    notes: str = ""
+    send_email: bool = False
+
+
+@api_router.post("/tenants/{tenant_id}/receipts")
+async def generate_rent_receipt(tenant_id: str, body: RentReceiptRequest, user: dict = Depends(get_current_user)):
+    tenant = await db.tenants.find_one({"id": tenant_id, "user_id": user["id"]}, {"_id": 0})
+    if not tenant:
+        raise HTTPException(404, "Tenant not found")
+    prop = await db.properties.find_one({"user_id": user["id"], "id": tenant["property_id"]}, {"_id": 0})
+    receipt_no = f"RR-{datetime.now(timezone.utc).strftime('%Y%m%d')}-{secrets.token_hex(3).upper()}"
+    paid_on = body.paid_on or datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+    receipt_doc = {
+        "id": str(uuid.uuid4()),
+        "receipt_no": receipt_no,
+        "user_id": user["id"],
+        "tenant_id": tenant_id,
+        "tenant_name": tenant["name"],
+        "tenant_email": tenant.get("email"),
+        "property_id": tenant["property_id"],
+        "property_name": prop["name"] if prop else tenant.get("property_name"),
+        "property_location": prop.get("location", "") if prop else "",
+        "month": body.month,
+        "amount": body.amount,
+        "paid_on": paid_on,
+        "payment_mode": body.payment_mode,
+        "notes": body.notes,
+        "landlord_name": user.get("name", ""),
+        "landlord_email": user.get("email", ""),
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.rent_receipts.insert_one(receipt_doc.copy())
+    receipt_doc.pop("_id", None)
+
+    if body.send_email and tenant.get("email"):
+        try:
+            subj, html = notify.tpl_rent_receipt_email(tenant["name"], receipt_doc["property_name"], body.month, _inr(body.amount))
+            notify.send_email(tenant["email"], subj, html)
+        except Exception:
+            logger.exception("receipt email failed")
+
+    return receipt_doc
+
+
+@api_router.get("/tenants/{tenant_id}/receipts")
+async def list_receipts(tenant_id: str, user: dict = Depends(get_current_user)):
+    tenant = await db.tenants.find_one({"id": tenant_id, "user_id": user["id"]}, {"_id": 0})
+    if not tenant:
+        raise HTTPException(404, "Tenant not found")
+    return await db.rent_receipts.find({"tenant_id": tenant_id, "user_id": user["id"]}, {"_id": 0}).sort("created_at", -1).to_list(200)
+
+
+@api_router.get("/receipts/{receipt_id}/pdf")
+async def receipt_pdf(receipt_id: str, user: dict = Depends(get_current_user)):
+    r = await db.rent_receipts.find_one({"id": receipt_id, "user_id": user["id"]}, {"_id": 0})
+    if not r:
+        raise HTTPException(404, "Receipt not found")
+
+    buf = io.BytesIO()
+    doc = SimpleDocTemplate(buf, pagesize=A4, leftMargin=18 * mm, rightMargin=18 * mm,
+                            topMargin=18 * mm, bottomMargin=18 * mm)
+    styles = getSampleStyleSheet()
+    story = []
+
+    title_style = ParagraphStyle("t", parent=styles["Title"], fontName="Helvetica-Bold", fontSize=22, textColor=colors.HexColor("#141311"), spaceAfter=4)
+    sub_style = ParagraphStyle("s", parent=styles["Normal"], fontSize=9, textColor=colors.HexColor("#999"), spaceAfter=18)
+    body_style = ParagraphStyle("b", parent=styles["Normal"], fontSize=10, textColor=colors.HexColor("#141311"), leading=14)
+
+    story.append(Paragraph("RENT RECEIPT", title_style))
+    story.append(Paragraph(f"Receipt no: {r['receipt_no']} &nbsp;·&nbsp; Issued {datetime.fromisoformat(r['created_at']).strftime('%d %b %Y')}", sub_style))
+
+    # Parties block
+    party = [
+        ["FROM (Landlord)", "TO (Tenant)"],
+        [r.get("landlord_name") or "—", r["tenant_name"]],
+        [r.get("landlord_email") or "", r.get("tenant_email") or ""],
+    ]
+    pt = Table(party, colWidths=[85 * mm, 85 * mm])
+    pt.setStyle(TableStyle([
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.HexColor("#999")),
+        ("FONTSIZE", (0, 0), (-1, -1), 9),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+    ]))
+    story.append(pt)
+    story.append(Spacer(1, 14))
+
+    # Details table
+    data = [
+        ["Property", r.get("property_name") or "—"],
+        ["Location", r.get("property_location") or "—"],
+        ["Month", r["month"]],
+        ["Payment mode", r.get("payment_mode", "—")],
+        ["Paid on", r.get("paid_on", "—")],
+        ["Amount (INR)", f"₹ {r['amount']:,.2f}"],
+    ]
+    t = Table(data, colWidths=[45 * mm, 125 * mm])
+    t.setStyle(TableStyle([
+        ("FONTSIZE", (0, 0), (-1, -1), 10),
+        ("TEXTCOLOR", (0, 0), (0, -1), colors.HexColor("#999")),
+        ("BACKGROUND", (0, -1), (-1, -1), colors.HexColor("#FAFAFA")),
+        ("FONTNAME", (1, -1), (1, -1), "Helvetica-Bold"),
+        ("GRID", (0, 0), (-1, -1), 0.3, colors.HexColor("#E0DDD8")),
+        ("LEFTPADDING", (0, 0), (-1, -1), 8),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 8),
+        ("TOPPADDING", (0, 0), (-1, -1), 8),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
+    ]))
+    story.append(t)
+
+    if r.get("notes"):
+        story.append(Spacer(1, 12))
+        story.append(Paragraph(f"<i>Notes: {r['notes']}</i>", body_style))
+
+    story.append(Spacer(1, 28))
+    story.append(Paragraph("Signature: _______________________________", body_style))
+    story.append(Spacer(1, 18))
+    story.append(Paragraph(
+        "Generated by Estima. This receipt is computed from user-supplied inputs. Amounts are indicative — verify with your landlord, CA, and bank records before relying on it for tax purposes.",
+        ParagraphStyle("f", parent=styles["Normal"], fontSize=7, textColor=colors.HexColor("#999")),
+    ))
+
+    doc.build(story)
+    buf.seek(0)
+    return StreamingResponse(
+        iter([buf.getvalue()]),
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename=rent-receipt-{r["receipt_no"]}.pdf'},
+    )
+
+
+# ------------------------------------------------------------
+# Builder Payment Plan Calculator
+# ------------------------------------------------------------
+class BuilderPlanRequest(BaseModel):
+    property_price: float
+    possession_months: int = 36          # time to possession
+    loan_rate: float = 8.5
+    loan_tenure_years: int = 20
+    opportunity_return: float = 11.0     # what you would earn on idle cash (MF)
+    subvention_rate_diff: float = 0.0    # builder pre-EMI savings if any
+
+
+def _plan_total_cost(schedule: list, loan_amount: float, rate: float, tenure_years: int,
+                     possession_months: int, opp_return: float) -> dict:
+    """schedule: list of (month_offset, amount, who_pays_emi) — simplified cost model.
+
+    Returns:
+      total_cash_outflow (paid by buyer during construction)
+      emi_during_construction (buyer-borne)
+      opportunity_cost (idle-cash cost)
+      total_loan_interest_to_possession
+    """
+    r = (rate / 100) / 12
+    balance = 0.0
+    months = 0
+    buyer_emi_paid = 0.0
+    total_paid = 0.0
+    opp_cost = 0.0
+
+    # amortize progressively: each payment from buyer adds to paid; loan disbursed proportionally
+    for offset, amt, emi_by_builder in schedule:
+        months = offset
+        # before this tranche, opportunity cost on remaining cash (assume buyer had full price parked)
+        # simplified: opp_cost = sum over tranches of amt * return * (months_until_paid / 12)
+        opp_cost += amt * (opp_return / 100) * (offset / 12) * 0.5  # half because linearly deployed
+        total_paid += amt
+        balance += amt  # as if all cash from buyer; for mix with loan, skip
+    # buyer EMI during construction (if subvention not applicable)
+    emi = _emi(loan_amount, rate, tenure_years)
+    construction_months = possession_months
+    return {
+        "emi_monthly": round(emi, 2),
+        "total_cash_paid_by_possession": round(total_paid, 2),
+        "opportunity_cost_idle_capital": round(opp_cost, 2),
+    }
+
+
+@api_router.post("/calc/builder-plan")
+async def builder_plan(body: BuilderPlanRequest):
+    """Compare popular builder payment plans.
+
+    CLP: ~10% booking, balance progressive over 36 months, buyer pays own EMI.
+    10:90: 10% now, 90% on possession — big balloon. Buyer usually avoids pre-EMI during build.
+    20:80: 20% now, 80% on possession. Similar to 10:90.
+    Subvention (pre-EMI paid by builder): buyer pays ~5-10% down, bank disburses, builder pays interest
+                                          until possession. Buyer EMI starts at possession.
+    """
+    price = body.property_price
+    months = max(body.possession_months, 1)
+    rate = body.loan_rate
+    r = (rate / 100) / 12
+    n_total_months = body.loan_tenure_years * 12
+    opp = body.opportunity_return / 100
+
+    # Helper: pre-EMI interest-only during construction (common in subvention): buyer pays interest * principal
+    def _total_pre_emi(loan_amount, construction_months):
+        # interest-only monthly
+        return loan_amount * r * construction_months
+
+    def _emi_local(loan):
+        return _emi(loan, rate, body.loan_tenure_years)
+
+    plans = []
+
+    # ----- CLP (Construction-Linked, 10 slabs over possession) -----
+    clp_down = price * 0.10
+    clp_loan = price - clp_down
+    clp_pre_emi = _total_pre_emi(clp_loan, months)
+    # Opportunity cost: buyer has already parked down payment; the rest follows slabs
+    clp_opp = clp_down * opp * (months / 12)   # opp cost on initial 10% during build
+    plans.append({
+        "id": "clp",
+        "name": "Construction-Linked Plan (CLP)",
+        "description": "Pay in slabs linked to construction milestones.",
+        "down_payment": round(clp_down, 2),
+        "loan_amount": round(clp_loan, 2),
+        "pre_emi_total": round(clp_pre_emi, 2),
+        "pre_emi_by_buyer": round(clp_pre_emi, 2),
+        "monthly_emi_after_possession": round(_emi_local(clp_loan), 2),
+        "opportunity_cost_during_build": round(clp_opp, 2),
+        "effective_total_cost": round(price + clp_pre_emi + clp_opp, 2),
+    })
+
+    # ----- 10:90 -----
+    ten_down = price * 0.10
+    ten_loan = price - ten_down
+    # 10:90 — lender disburses at possession only, so no pre-EMI to buyer
+    ten_pre_emi = 0
+    ten_opp = ten_down * opp * (months / 12)
+    plans.append({
+        "id": "10_90",
+        "name": "10:90 Plan",
+        "description": "10% now, 90% at possession. No pre-EMI burden.",
+        "down_payment": round(ten_down, 2),
+        "loan_amount": round(ten_loan, 2),
+        "pre_emi_total": 0,
+        "pre_emi_by_buyer": 0,
+        "monthly_emi_after_possession": round(_emi_local(ten_loan), 2),
+        "opportunity_cost_during_build": round(ten_opp, 2),
+        "effective_total_cost": round(price + ten_opp, 2),
+    })
+
+    # ----- 20:80 -----
+    twenty_down = price * 0.20
+    twenty_loan = price - twenty_down
+    twenty_pre_emi = 0
+    twenty_opp = twenty_down * opp * (months / 12)
+    plans.append({
+        "id": "20_80",
+        "name": "20:80 Plan",
+        "description": "20% now, 80% at possession. No pre-EMI during build.",
+        "down_payment": round(twenty_down, 2),
+        "loan_amount": round(twenty_loan, 2),
+        "pre_emi_total": 0,
+        "pre_emi_by_buyer": 0,
+        "monthly_emi_after_possession": round(_emi_local(twenty_loan), 2),
+        "opportunity_cost_during_build": round(twenty_opp, 2),
+        "effective_total_cost": round(price + twenty_opp, 2),
+    })
+
+    # ----- Subvention (Pre-EMI paid by builder) -----
+    sub_down = price * 0.10
+    sub_loan = price - sub_down
+    sub_pre_emi = _total_pre_emi(sub_loan, months)
+    sub_opp = sub_down * opp * (months / 12)
+    plans.append({
+        "id": "subvention",
+        "name": "Subvention (Pre-EMI by builder)",
+        "description": "10% now, bank disburses full loan, builder pays pre-EMI interest till possession.",
+        "down_payment": round(sub_down, 2),
+        "loan_amount": round(sub_loan, 2),
+        "pre_emi_total": round(sub_pre_emi, 2),
+        "pre_emi_by_buyer": 0,
+        "monthly_emi_after_possession": round(_emi_local(sub_loan), 2),
+        "opportunity_cost_during_build": round(sub_opp, 2),
+        "effective_total_cost": round(price + sub_opp, 2),
+    })
+
+    winner = min(plans, key=lambda p: p["effective_total_cost"])
+    worst = max(plans, key=lambda p: p["effective_total_cost"])
+    return {
+        "plans": plans,
+        "winner": winner["id"],
+        "winner_name": winner["name"],
+        "savings_vs_worst": round(worst["effective_total_cost"] - winner["effective_total_cost"], 2),
+        "possession_months": months,
+    }
+
+
+# ------------------------------------------------------------
+# Feedback
+# ------------------------------------------------------------
+class FeedbackIn(BaseModel):
+    category: str = "general"   # general | bug | idea | love
+    message: str
+    rating: Optional[int] = None  # 1-5
+    page: Optional[str] = None    # URL of page it was submitted from
+
+
+@api_router.post("/feedback")
+async def create_feedback(body: FeedbackIn, user: dict = Depends(get_current_user)):
+    if not body.message.strip():
+        raise HTTPException(400, "Message required")
+    await db.feedback.insert_one({
+        "id": str(uuid.uuid4()),
+        "user_id": user["id"],
+        "email": user["email"],
+        "name": user.get("name", ""),
+        "category": body.category,
+        "message": body.message.strip()[:4000],
+        "rating": body.rating,
+        "page": body.page,
+        "status": "new",
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    })
+    return {"ok": True}
+
+
+@api_router.get("/admin/feedback")
+async def admin_feedback(user: dict = Depends(get_current_user)):
+    _require_admin(user)
+    return await db.feedback.find({}, {"_id": 0}).sort("created_at", -1).to_list(500)
+
+
+@api_router.post("/admin/feedback/{fid}/status")
+async def admin_update_feedback(fid: str, body: dict, user: dict = Depends(get_current_user)):
+    _require_admin(user)
+    status = body.get("status", "triaged")
+    await db.feedback.update_one({"id": fid}, {"$set": {"status": status}})
+    return {"ok": True}
 
 
 # ------------------------------------------------------------

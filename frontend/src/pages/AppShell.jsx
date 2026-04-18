@@ -2,6 +2,7 @@ import { NavLink, Outlet, useNavigate, Link, useLocation } from "react-router-do
 import { useEffect, useState } from "react";
 import { useAuth } from "../context/AuthContext";
 import Tour, { hasSeenTour } from "../components/Tour";
+import FeedbackWidget from "../components/FeedbackWidget";
 import {
   SquaresFour,
   Buildings,
@@ -16,6 +17,7 @@ import {
   BookOpen,
   Question,
   Gift,
+  UserCircle,
 } from "@phosphor-icons/react";
 
 function daysLeft(iso) {
@@ -46,6 +48,7 @@ export default function AppShell() {
     { to: "/app", label: "Dashboard", icon: SquaresFour, end: true, id: "nav-dashboard" },
     { to: "/app/properties", label: "Properties", icon: Buildings, id: "nav-properties" },
     { to: "/app/portfolio", label: "Portfolio", icon: ChartPieSlice, id: "nav-portfolio" },
+    { to: "/app/tenants", label: "Tenants", icon: UserCircle, id: "nav-tenants" },
     { to: "/app/compare", label: "Compare", icon: Scales, id: "nav-compare" },
     { to: "/app/calculators", label: "Calculators", icon: Calculator, id: "nav-calculators" },
     { to: "/app/advisor", label: "AI Advisor", icon: Sparkle, id: "nav-advisor", pro: true },
@@ -169,6 +172,7 @@ export default function AppShell() {
       >
         <Question size={20} weight="bold" />
       </button>
+      <FeedbackWidget />
     </div>
   );
 }

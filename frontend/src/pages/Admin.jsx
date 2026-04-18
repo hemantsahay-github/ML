@@ -13,6 +13,11 @@ import {
   ArrowCircleDown,
   Gift,
   Prohibit,
+  Clock,
+  ChatCircleDots,
+  Bug,
+  Lightbulb,
+  Heart,
 } from "@phosphor-icons/react";
 
 export default function Admin() {
@@ -21,19 +26,22 @@ export default function Admin() {
   const [stats, setStats] = useState(null);
   const [users, setUsers] = useState([]);
   const [txns, setTxns] = useState([]);
+  const [feedback, setFeedback] = useState([]);
   const [loading, setLoading] = useState(true);
 
   const load = async () => {
     setLoading(true);
     try {
-      const [s, u, t] = await Promise.all([
+      const [s, u, t, f] = await Promise.all([
         api.get("/admin/stats"),
         api.get("/admin/users"),
         api.get("/admin/transactions"),
+        api.get("/admin/feedback"),
       ]);
       setStats(s.data);
       setUsers(u.data);
       setTxns(t.data);
+      setFeedback(f.data);
     } catch (e) {
       toast.error(formatApiErrorDetail(e.response?.data?.detail));
     } finally {
@@ -74,11 +82,12 @@ export default function Admin() {
         </span>
       </div>
 
-      <div className="border-b hairline mb-8 flex gap-1">
+      <div className="border-b hairline mb-8 flex gap-1 flex-wrap">
         {[
           ["overview", "Overview"],
           ["users", `Users (${users.length})`],
           ["transactions", `Transactions (${txns.length})`],
+          ["feedback", `Feedback (${feedback.length})`],
         ].map(([id, label]) => (
           <button
             key={id}
@@ -103,6 +112,8 @@ export default function Admin() {
         <Overview stats={stats} />
       ) : tab === "users" ? (
         <UsersTable users={users} currentUserId={user?.id} onAct={act} />
+      ) : tab === "feedback" ? (
+        <FeedbackTable feedback={feedback} onRefresh={load} />
       ) : (
         <TxnsTable txns={txns} />
       )}
@@ -228,6 +239,17 @@ function UsersTable({ users, currentUserId, onAct }) {
                       <Prohibit size={14} />
                     </button>
                   )}
+                  <button
+                    onClick={() => {
+                      const days = parseInt(prompt("Extend trial by how many days?", "15") || "0", 10);
+                      if (days > 0) onAct(u.id, "extend_trial", days);
+                    }}
+                    className="btn-ghost p-1.5 text-xs"
+                    title="Extend trial"
+                    data-testid={`admin-extend-trial-${u.id}`}
+                  >
+                    <Clock size={14} />
+                  </button>
                 </div>
               </td>
             </tr>
@@ -281,6 +303,75 @@ function TxnsTable({ txns }) {
           ))}
         </tbody>
       </table>
+    </div>
+  );
+}
+
+
+const CAT_ICON = { general: ChatCircleDots, bug: Bug, idea: Lightbulb, love: Heart };
+const CAT_COLOR = {
+  general: "text-muted-foreground",
+  bug: "text-destructive",
+  idea: "text-[hsl(var(--secondary))]",
+  love: "text-[hsl(var(--primary))]",
+};
+
+function FeedbackTable({ feedback, onRefresh }) {
+  const setStatus = async (fid, status) => {
+    try {
+      await api.post(`/admin/feedback/${fid}/status`, { status });
+      toast.success("Updated");
+      onRefresh?.();
+    } catch (e) {
+      toast.error(formatApiErrorDetail(e.response?.data?.detail));
+    }
+  };
+  if (feedback.length === 0)
+    return (
+      <div className="card-flat p-12 text-center text-muted-foreground" data-testid="admin-feedback-empty">
+        No feedback yet.
+      </div>
+    );
+  return (
+    <div className="space-y-3" data-testid="admin-feedback-list">
+      {feedback.map((f) => {
+        const Icon = CAT_ICON[f.category] || ChatCircleDots;
+        return (
+          <div key={f.id} className="card-flat p-5" data-testid={`admin-feedback-${f.id}`}>
+            <div className="flex items-start gap-4">
+              <div className={`h-9 w-9 border hairline flex items-center justify-center shrink-0 ${CAT_COLOR[f.category] || ""}`}>
+                <Icon size={16} weight="duotone" />
+              </div>
+              <div className="flex-1">
+                <div className="flex items-center justify-between mb-2">
+                  <div>
+                    <span className="eyebrow capitalize">{f.category}</span>
+                    {f.rating && <span className="ml-3 text-xs text-muted-foreground">rating: {f.rating}/5</span>}
+                    {f.page && <span className="ml-3 text-xs text-muted-foreground font-mono">{f.page}</span>}
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <span className={`text-xs uppercase tracking-widest ${f.status === "new" ? "text-[hsl(var(--primary))]" : "text-muted-foreground"}`}>
+                      {f.status}
+                    </span>
+                    <select
+                      value={f.status}
+                      onChange={(e) => setStatus(f.id, e.target.value)}
+                      className="input-dark text-xs px-2 py-1"
+                      data-testid={`admin-feedback-status-${f.id}`}
+                    >
+                      {["new", "triaged", "planned", "done", "wontfix"].map((s) => (<option key={s}>{s}</option>))}
+                    </select>
+                  </div>
+                </div>
+                <div className="text-sm leading-relaxed whitespace-pre-wrap">{f.message}</div>
+                <div className="mt-3 text-xs text-muted-foreground">
+                  from <span className="text-foreground">{f.email}</span> · {new Date(f.created_at).toLocaleString()}
+                </div>
+              </div>
+            </div>
+          </div>
+        );
+      })}
     </div>
   );
 }
