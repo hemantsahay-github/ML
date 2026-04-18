@@ -53,3 +53,27 @@ Personal property buying options and decision making and managing — comparing 
 - Properties form: Status toggle with conditional owned-fields (purchase date/price, current value, outstanding loan, rented + rent income)
 - Dashboard: 4-metric grid now including owned portfolio value + equity
 - Tests: 14/14 backend passed (iteration_3.json)
+
+## 2026-04-18 — Razorpay + Pro tier + Admin + Guide + Cashflow Finder + vs Markets
+**Billing & Membership:**
+- Razorpay test keys wired (`rzp_test_Sf6hLVUPI1DcI3`). Plans: Free ₹0, Pro Monthly ₹999, Pro Yearly ₹9,999
+- 10-day free Pro trial auto-created on register (user.plan='pro', plan_status='trial', trial_ends_at=+10d)
+- Endpoints: /api/billing/plans, /me, /create-order, /verify-payment (HMAC SHA256), /cancel
+- Pro-gated: /api/advisor/chat, /api/compare/export/csv, /api/compare/export/pdf (402 on non-Pro)
+- Admin account seeded as permanent Pro (100-year expiry)
+
+**Admin dashboard** (/app/admin, role=admin only):
+- Overview: user stats, revenue, property totals
+- Users table with actions: promote/demote admin, grant/cancel Pro
+- Transactions table
+
+**New calculators & analysis:**
+- /api/calc/cashflow-positive (public) — reverse-solves max property price for rent-covered EMI+costs
+- /api/portfolio/vs-investments — staggered CAGR comparison against Equity 13% / MF 11% / Gold 9% / Silver 8.5% / FD 7%
+
+**Onboarding:**
+- Auto-launched Tour modal on first login (6 steps, localStorage persistence, data-testid='tour-modal')
+- /app/guide page with feature reference + FAQ + "Run the tour again" button
+- Floating help FAB bottom-right (repositioned to right-24 to avoid Emergent badge)
+
+**Tests:** iteration_5.json — 34/34 backend pass, frontend 100% after FAB z-index fix.

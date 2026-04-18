@@ -111,7 +111,7 @@ function CashflowPositiveCalc() {
           </div>
         ) : (
           <div className="space-y-6" data-testid="cashflow-result">
-            <div className="card-flat p-8 border-[hsl(var(--secondary))]">
+            <div className="card-flat p-8 border-[hsl(var(--secondary))]" data-testid="cashflow-max-price">
               <div className="eyebrow text-[hsl(var(--secondary))] mb-2">Maximum cashflow-positive price</div>
               <div className="num-metric text-5xl mb-3">{inrFull(res.max_price)}</div>
               <div className="text-sm text-muted-foreground">

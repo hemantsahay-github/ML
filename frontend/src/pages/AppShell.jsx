@@ -161,7 +161,7 @@ export default function AppShell() {
       {/* Floating help / re-open tour */}
       <button
         onClick={() => setShowTour(true)}
-        className="fixed bottom-6 right-6 z-40 h-12 w-12 rounded-full bg-[hsl(var(--primary))] text-white flex items-center justify-center shadow-lg hover:bg-[#d46c44] transition"
+        className="fixed bottom-6 right-24 z-50 h-12 w-12 rounded-full bg-[hsl(var(--primary))] text-white flex items-center justify-center shadow-lg hover:bg-[#d46c44] transition"
         title="Open tour"
         data-testid="help-fab"
       >
