@@ -8,21 +8,27 @@ import { ArrowRight, Buildings, Plus, TrendUp, Scales } from "@phosphor-icons/re
 export default function Dashboard() {
   const { user } = useAuth();
   const [props, setProps] = useState([]);
+  const [portfolio, setPortfolio] = useState(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     (async () => {
       try {
-        const { data } = await api.get("/properties");
-        setProps(data);
+        const [pRes, poRes] = await Promise.all([
+          api.get("/properties"),
+          api.get("/portfolio/summary"),
+        ]);
+        setProps(pRes.data);
+        setPortfolio(poRes.data);
       } finally {
         setLoading(false);
       }
     })();
   }, []);
 
-  const totalValue = props.reduce((a, p) => a + (p.price || 0), 0);
-  const avgPrice = props.length ? totalValue / props.length : 0;
+  const candidates = props.filter((p) => (p.status || "evaluating") === "evaluating");
+  const totalValue = candidates.reduce((a, p) => a + (p.price || 0), 0);
+  const avgPrice = candidates.length ? totalValue / candidates.length : 0;
 
   return (
     <div className="max-w-7xl mx-auto px-8 py-10" data-testid="dashboard-page">
@@ -47,24 +53,30 @@ export default function Dashboard() {
       </div>
 
       {/* Metric cards */}
-      <div className="grid md:grid-cols-3 gap-6 mb-12">
+      <div className="grid md:grid-cols-4 gap-6 mb-12">
         <MetricCard
-          label="Properties tracked"
-          value={props.length}
+          label="Candidates tracked"
+          value={candidates.length}
           icon={<Buildings size={22} weight="duotone" />}
           testid="metric-properties"
         />
         <MetricCard
-          label="Total ticket size"
-          value={inr(totalValue)}
-          icon={<TrendUp size={22} weight="duotone" />}
-          testid="metric-total-value"
-        />
-        <MetricCard
-          label="Avg. price"
+          label="Avg. ticket size"
           value={inr(avgPrice)}
           icon={<Scales size={22} weight="duotone" />}
           testid="metric-avg-price"
+        />
+        <MetricCard
+          label="Owned portfolio"
+          value={inr(portfolio?.total_current_value || 0)}
+          icon={<TrendUp size={22} weight="duotone" />}
+          testid="metric-portfolio-value"
+        />
+        <MetricCard
+          label="Your equity"
+          value={inr(portfolio?.total_equity || 0)}
+          icon={<TrendUp size={22} weight="duotone" />}
+          testid="metric-portfolio-equity"
         />
       </div>
 
@@ -81,11 +93,11 @@ export default function Dashboard() {
           <div className="text-muted-foreground" data-testid="dashboard-loading">
             Loading…
           </div>
-        ) : props.length === 0 ? (
+        ) : candidates.length === 0 ? (
           <EmptyState />
         ) : (
           <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-6">
-            {props.slice(0, 6).map((p) => (
+            {candidates.slice(0, 6).map((p) => (
               <div key={p.id} className="card-flat p-6" data-testid={`dashboard-prop-${p.id}`}>
                 <div className="eyebrow">{p.type}</div>
                 <div className="font-serif text-2xl mt-2">{p.name}</div>
@@ -102,6 +114,12 @@ export default function Dashboard() {
 
       {/* Tools */}
       <section className="mt-16 grid md:grid-cols-2 gap-6">
+        <ToolCard
+          to="/app/portfolio"
+          title="Portfolio"
+          body="Track properties you already own: value, equity, cashflow."
+          testid="tool-portfolio"
+        />
         <ToolCard
           to="/app/compare"
           title="Side-by-side comparison"

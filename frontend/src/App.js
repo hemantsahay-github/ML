@@ -12,6 +12,7 @@ import Properties from "./pages/Properties";
 import Compare from "./pages/Compare";
 import Calculators from "./pages/Calculators";
 import Advisor from "./pages/Advisor";
+import Portfolio from "./pages/Portfolio";
 import SharedReport from "./pages/SharedReport";
 
 function App() {
@@ -45,6 +46,7 @@ function App() {
             >
               <Route index element={<Dashboard />} />
               <Route path="properties" element={<Properties />} />
+              <Route path="portfolio" element={<Portfolio />} />
               <Route path="compare" element={<Compare />} />
               <Route path="calculators" element={<Calculators />} />
               <Route path="advisor" element={<Advisor />} />

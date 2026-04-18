@@ -23,6 +23,13 @@ const blank = {
   score_safety: 8,
   score_commute: 6,
   score_resale: 7,
+  status: "evaluating",
+  purchase_date: "",
+  purchase_price: "",
+  current_value: "",
+  current_loan_balance: "",
+  monthly_rent_income: 0,
+  rented: false,
 };
 
 export default function Properties() {
@@ -31,6 +38,7 @@ export default function Properties() {
   const [form, setForm] = useState(null); // editing form
   const [isEdit, setIsEdit] = useState(false);
   const [cities, setCities] = useState([]);
+  const [filter, setFilter] = useState("all"); // all | evaluating | owned
 
   const load = async () => {
     setLoading(true);
@@ -71,7 +79,7 @@ export default function Properties() {
       delete payload.id;
       delete payload.user_id;
       delete payload.created_at;
-      // coerce numbers
+      // required numeric coercion
       [
         "price",
         "area_sqft",
@@ -87,7 +95,14 @@ export default function Properties() {
         "score_safety",
         "score_commute",
         "score_resale",
-      ].forEach((k) => (payload[k] = Number(payload[k])));
+        "monthly_rent_income",
+      ].forEach((k) => (payload[k] = Number(payload[k] || 0)));
+      // optional owned numbers (empty string → null)
+      ["purchase_price", "current_value", "current_loan_balance"].forEach((k) => {
+        payload[k] = payload[k] === "" || payload[k] === null || payload[k] === undefined ? null : Number(payload[k]);
+      });
+      if (!payload.purchase_date) payload.purchase_date = null;
+      payload.rented = !!payload.rented;
       if (isEdit) {
         await api.put(`/properties/${form.id}`, payload);
         toast.success("Property updated");
@@ -111,6 +126,17 @@ export default function Properties() {
     } catch (e) {
       toast.error(formatApiErrorDetail(e.response?.data?.detail));
     }
+  };
+
+  const filtered = items.filter((p) => {
+    const status = p.status || "evaluating";
+    if (filter === "all") return true;
+    return status === filter;
+  });
+  const counts = {
+    all: items.length,
+    evaluating: items.filter((p) => (p.status || "evaluating") === "evaluating").length,
+    owned: items.filter((p) => p.status === "owned").length,
   };
 
   return (
@@ -140,47 +166,98 @@ export default function Properties() {
           </button>
         </div>
       ) : (
-        <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-6">
-          {items.map((p) => (
-            <div key={p.id} className="card-flat p-6" data-testid={`property-card-${p.id}`}>
-              <div className="flex justify-between items-start">
-                <div>
-                  <div className="eyebrow">{p.type}</div>
-                  <div className="font-serif text-2xl mt-1">{p.name}</div>
-                  <div className="text-xs text-muted-foreground">{p.location}</div>
-                </div>
-                <div className="flex gap-1">
-                  <button onClick={() => openEdit(p)} className="btn-ghost p-2" title="Edit" data-testid={`edit-${p.id}`}>
-                    <PencilSimple size={14} />
-                  </button>
-                  <button onClick={() => remove(p.id)} className="btn-ghost p-2" title="Delete" data-testid={`delete-${p.id}`}>
-                    <Trash size={14} />
-                  </button>
-                </div>
-              </div>
-              <div className="num-metric text-3xl mt-4">{inr(p.price)}</div>
-              <div className="text-xs text-muted-foreground mt-1">{p.area_sqft} sqft · ₹{Math.round(p.price / (p.area_sqft || 1)).toLocaleString("en-IN")}/sqft</div>
-              <div className="mt-4 pt-4 border-t hairline grid grid-cols-3 gap-2 text-xs">
-                <Stat label="Loan" value={`${p.loan_rate}%`} />
-                <Stat label="Tenure" value={`${p.loan_tenure_years}y`} />
-                <Stat label="Appr." value={`${p.expected_appreciation}%`} />
-              </div>
-              <div className="mt-4 flex flex-wrap gap-2">
-                {[
-                  ["Loc", p.score_location],
-                  ["Amen", p.score_amenities],
-                  ["Safe", p.score_safety],
-                  ["Comm", p.score_commute],
-                  ["Resale", p.score_resale],
-                ].map(([l, v]) => (
-                  <span key={l} className="text-xs px-2 py-1 border hairline text-muted-foreground">
-                    {l} · <span className="text-foreground">{v}</span>
-                  </span>
-                ))}
-              </div>
+        <>
+          <div className="border-b hairline mb-6 flex gap-1">
+            {[
+              ["all", "All"],
+              ["evaluating", "Evaluating"],
+              ["owned", "Owned"],
+            ].map(([id, label]) => (
+              <button
+                key={id}
+                onClick={() => setFilter(id)}
+                data-testid={`filter-${id}`}
+                className={`px-4 py-2.5 text-sm -mb-px border-b-2 transition ${
+                  filter === id
+                    ? "border-[hsl(var(--primary))] text-foreground"
+                    : "border-transparent text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                {label} <span className="text-muted-foreground ml-1">({counts[id]})</span>
+              </button>
+            ))}
+          </div>
+
+          {filtered.length === 0 ? (
+            <div className="card-flat p-12 text-center text-muted-foreground" data-testid="filter-empty">
+              No {filter} properties yet.
             </div>
-          ))}
-        </div>
+          ) : (
+            <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-6">
+              {filtered.map((p) => (
+                <div key={p.id} className="card-flat p-6" data-testid={`property-card-${p.id}`}>
+                  <div className="flex justify-between items-start">
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <div className="eyebrow">{p.type}</div>
+                        <span
+                          className={`text-[0.6rem] tracking-widest uppercase px-1.5 py-0.5 border ${
+                            p.status === "owned"
+                              ? "border-[hsl(var(--secondary))] text-[hsl(var(--secondary))]"
+                              : "hairline text-muted-foreground"
+                          }`}
+                          data-testid={`status-badge-${p.id}`}
+                        >
+                          {p.status === "owned" ? "Owned" : "Evaluating"}
+                        </span>
+                      </div>
+                      <div className="font-serif text-2xl mt-1">{p.name}</div>
+                      <div className="text-xs text-muted-foreground">{p.location}</div>
+                    </div>
+                    <div className="flex gap-1">
+                      <button onClick={() => openEdit(p)} className="btn-ghost p-2" title="Edit" data-testid={`edit-${p.id}`}>
+                        <PencilSimple size={14} />
+                      </button>
+                      <button onClick={() => remove(p.id)} className="btn-ghost p-2" title="Delete" data-testid={`delete-${p.id}`}>
+                        <Trash size={14} />
+                      </button>
+                    </div>
+                  </div>
+                  <div className="num-metric text-3xl mt-4">{inr(p.price)}</div>
+                  <div className="text-xs text-muted-foreground mt-1">
+                    {p.area_sqft} sqft · ₹{Math.round(p.price / (p.area_sqft || 1)).toLocaleString("en-IN")}/sqft
+                  </div>
+                  {p.status === "owned" && p.current_value ? (
+                    <div className="mt-3 text-xs text-[hsl(var(--secondary))]">
+                      Now worth {inr(p.current_value)}
+                      {p.purchase_price
+                        ? ` · ${(((p.current_value - p.purchase_price) / p.purchase_price) * 100).toFixed(1)}%`
+                        : ""}
+                    </div>
+                  ) : null}
+                  <div className="mt-4 pt-4 border-t hairline grid grid-cols-3 gap-2 text-xs">
+                    <Stat label="Loan" value={`${p.loan_rate}%`} />
+                    <Stat label="Tenure" value={`${p.loan_tenure_years}y`} />
+                    <Stat label="Appr." value={`${p.expected_appreciation}%`} />
+                  </div>
+                  <div className="mt-4 flex flex-wrap gap-2">
+                    {[
+                      ["Loc", p.score_location],
+                      ["Amen", p.score_amenities],
+                      ["Safe", p.score_safety],
+                      ["Comm", p.score_commute],
+                      ["Resale", p.score_resale],
+                    ].map(([l, v]) => (
+                      <span key={l} className="text-xs px-2 py-1 border hairline text-muted-foreground">
+                        {l} · <span className="text-foreground">{v}</span>
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </>
       )}
 
       {form && (
@@ -264,6 +341,96 @@ export default function Properties() {
             <Field label="Rental yield %">
               <input type="number" step="0.1" className="input-dark w-full px-3 py-2" value={form.rental_yield} onChange={(e) => setForm({ ...form, rental_yield: e.target.value })} />
             </Field>
+
+            <div className="border-t hairline pt-5">
+              <div className="eyebrow mb-3">Status</div>
+              <div className="flex gap-2 mb-4">
+                {[
+                  ["evaluating", "Evaluating"],
+                  ["owned", "Owned"],
+                ].map(([id, label]) => (
+                  <button
+                    type="button"
+                    key={id}
+                    onClick={() => setForm({ ...form, status: id })}
+                    data-testid={`form-status-${id}`}
+                    className={`px-4 py-2 text-sm border transition ${
+                      form.status === id
+                        ? "bg-[hsl(var(--primary))] border-[hsl(var(--primary))] text-white"
+                        : "hairline text-muted-foreground hover:text-foreground hover:border-[hsl(var(--secondary))]"
+                    }`}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+
+              {form.status === "owned" && (
+                <div className="space-y-4" data-testid="owned-fields">
+                  <div className="grid grid-cols-2 gap-4">
+                    <Field label="Purchase date">
+                      <input
+                        type="date"
+                        className="input-dark w-full px-3 py-2"
+                        value={form.purchase_date || ""}
+                        onChange={(e) => setForm({ ...form, purchase_date: e.target.value })}
+                        data-testid="form-purchase-date"
+                      />
+                    </Field>
+                    <Field label="Purchase price (₹)">
+                      <input
+                        type="number"
+                        className="input-dark w-full px-3 py-2"
+                        value={form.purchase_price ?? ""}
+                        onChange={(e) => setForm({ ...form, purchase_price: e.target.value })}
+                        data-testid="form-purchase-price"
+                      />
+                    </Field>
+                  </div>
+                  <div className="grid grid-cols-2 gap-4">
+                    <Field label="Current value (₹)">
+                      <input
+                        type="number"
+                        className="input-dark w-full px-3 py-2"
+                        value={form.current_value ?? ""}
+                        onChange={(e) => setForm({ ...form, current_value: e.target.value })}
+                        data-testid="form-current-value"
+                      />
+                    </Field>
+                    <Field label="Outstanding loan (₹)">
+                      <input
+                        type="number"
+                        className="input-dark w-full px-3 py-2"
+                        value={form.current_loan_balance ?? ""}
+                        onChange={(e) => setForm({ ...form, current_loan_balance: e.target.value })}
+                        data-testid="form-current-loan"
+                      />
+                    </Field>
+                  </div>
+                  <label className="flex items-center gap-3">
+                    <input
+                      type="checkbox"
+                      checked={!!form.rented}
+                      onChange={(e) => setForm({ ...form, rented: e.target.checked })}
+                      className="accent-[hsl(var(--primary))] h-4 w-4"
+                      data-testid="form-rented"
+                    />
+                    <span className="text-sm">Currently rented out</span>
+                  </label>
+                  {form.rented && (
+                    <Field label="Monthly rent income (₹)">
+                      <input
+                        type="number"
+                        className="input-dark w-full px-3 py-2"
+                        value={form.monthly_rent_income || 0}
+                        onChange={(e) => setForm({ ...form, monthly_rent_income: e.target.value })}
+                        data-testid="form-rent-income"
+                      />
+                    </Field>
+                  )}
+                </div>
+              )}
+            </div>
 
             <div className="border-t hairline pt-5">
               <div className="eyebrow mb-3">Your subjective scores (0–10)</div>

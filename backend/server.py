@@ -227,6 +227,7 @@ async def refresh_token(request: Request, response: Response):
 # Properties Models
 # ------------------------------------------------------------
 PropertyType = Literal["flat", "villa", "plot", "commercial", "other"]
+PropertyStatus = Literal["evaluating", "owned"]
 
 
 class PropertyIn(BaseModel):
@@ -250,6 +251,14 @@ class PropertyIn(BaseModel):
     score_safety: float = 5
     score_commute: float = 5
     score_resale: float = 5
+    # Ownership tracking
+    status: PropertyStatus = "evaluating"
+    purchase_date: Optional[str] = None       # ISO date "YYYY-MM-DD"
+    purchase_price: Optional[float] = None
+    current_value: Optional[float] = None
+    current_loan_balance: Optional[float] = None
+    monthly_rent_income: float = 0.0
+    rented: bool = False
 
 
 class PropertyOut(PropertyIn):
@@ -259,9 +268,92 @@ class PropertyOut(PropertyIn):
 
 
 @api_router.get("/properties", response_model=List[PropertyOut])
-async def list_properties(user: dict = Depends(get_current_user)):
-    docs = await db.properties.find({"user_id": user["id"]}, {"_id": 0}).to_list(500)
+async def list_properties(status: Optional[str] = None, user: dict = Depends(get_current_user)):
+    q = {"user_id": user["id"]}
+    if status in ("evaluating", "owned"):
+        q["status"] = status
+    docs = await db.properties.find(q, {"_id": 0}).to_list(500)
+    # backfill status for old records
+    for d in docs:
+        d.setdefault("status", "evaluating")
     return docs
+
+
+@api_router.get("/portfolio/summary")
+async def portfolio_summary(user: dict = Depends(get_current_user)):
+    owned = await db.properties.find(
+        {"user_id": user["id"], "status": "owned"}, {"_id": 0}
+    ).to_list(500)
+
+    total_current_value = 0.0
+    total_purchase_cost = 0.0
+    total_loan_balance = 0.0
+    total_monthly_rent = 0.0
+    total_monthly_emi = 0.0
+    total_monthly_maintenance = 0.0
+    items = []
+
+    for p in owned:
+        purchase_price = p.get("purchase_price") or p.get("price") or 0
+        current_value = p.get("current_value") or purchase_price
+        loan_balance = p.get("current_loan_balance")
+        if loan_balance is None:
+            # estimate as original loan minus rough amortization; fallback to original loan
+            loan_balance = max((p.get("price", 0) - p.get("down_payment", 0)), 0)
+        emi = _emi(max(p.get("price", 0) - p.get("down_payment", 0), 0),
+                   p.get("loan_rate", 8.5), p.get("loan_tenure_years", 20))
+        rent = p.get("monthly_rent_income", 0) if p.get("rented") else 0
+        maint = p.get("maintenance_monthly", 0)
+
+        equity = current_value - loan_balance
+        appreciation_pct = ((current_value - purchase_price) / purchase_price * 100) if purchase_price else 0
+        monthly_cashflow = rent - emi - maint
+
+        total_current_value += current_value
+        total_purchase_cost += purchase_price
+        total_loan_balance += loan_balance
+        total_monthly_rent += rent
+        total_monthly_emi += emi
+        total_monthly_maintenance += maint
+
+        items.append({
+            "id": p["id"],
+            "name": p["name"],
+            "type": p["type"],
+            "location": p.get("location", ""),
+            "purchase_date": p.get("purchase_date"),
+            "purchase_price": round(purchase_price, 2),
+            "current_value": round(current_value, 2),
+            "loan_balance": round(loan_balance, 2),
+            "equity": round(equity, 2),
+            "appreciation_pct": round(appreciation_pct, 2),
+            "emi": round(emi, 2),
+            "monthly_rent": round(rent, 2),
+            "monthly_cashflow": round(monthly_cashflow, 2),
+            "rented": bool(p.get("rented")),
+        })
+
+    total_equity = total_current_value - total_loan_balance
+    total_appreciation_pct = (
+        (total_current_value - total_purchase_cost) / total_purchase_cost * 100
+        if total_purchase_cost else 0
+    )
+    net_monthly_cashflow = total_monthly_rent - total_monthly_emi - total_monthly_maintenance
+
+    return {
+        "count": len(owned),
+        "total_current_value": round(total_current_value, 2),
+        "total_purchase_cost": round(total_purchase_cost, 2),
+        "total_equity": round(total_equity, 2),
+        "total_loan_balance": round(total_loan_balance, 2),
+        "total_appreciation_pct": round(total_appreciation_pct, 2),
+        "total_appreciation_inr": round(total_current_value - total_purchase_cost, 2),
+        "net_monthly_cashflow": round(net_monthly_cashflow, 2),
+        "total_monthly_rent": round(total_monthly_rent, 2),
+        "total_monthly_emi": round(total_monthly_emi, 2),
+        "total_monthly_maintenance": round(total_monthly_maintenance, 2),
+        "items": items,
+    }
 
 
 @api_router.post("/properties", response_model=PropertyOut)

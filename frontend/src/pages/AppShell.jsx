@@ -7,11 +7,13 @@ import {
   Calculator,
   Sparkle,
   SignOut,
+  ChartPieSlice,
 } from "@phosphor-icons/react";
 
 const nav = [
   { to: "/app", label: "Dashboard", icon: SquaresFour, end: true, id: "nav-dashboard" },
   { to: "/app/properties", label: "Properties", icon: Buildings, id: "nav-properties" },
+  { to: "/app/portfolio", label: "Portfolio", icon: ChartPieSlice, id: "nav-portfolio" },
   { to: "/app/compare", label: "Compare", icon: Scales, id: "nav-compare" },
   { to: "/app/calculators", label: "Calculators", icon: Calculator, id: "nav-calculators" },
   { to: "/app/advisor", label: "AI Advisor", icon: Sparkle, id: "nav-advisor" },
