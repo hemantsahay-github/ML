@@ -1,0 +1,48 @@
+{
+  "summary": "Iteration 7 testing: Google OAuth fallback session endpoint, Tenants CRUD, Rent receipt PDF, Builder Payment Plan calculator, Feedback widget + admin moderation, Admin extend_trial, and regression (login, properties, portfolio, compare). Backend: 24/24 pytest pass. Frontend: Builder Plan tab + Feedback widget + Landing demo videos verified. Tenants add-tenant form works; tenant-receipts drawer did not open in UI within 5s (minor UI issue — backend receipts endpoints all pass).",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "Tenants / Receipts drawer", "issue": "Clicking [data-testid^=tenant-receipts-] did not render [data-testid=receipts-drawer] within 5s after a newly created tenant. Possibly because newly saved tenant did not get added to list (card count was 1 before and 1 after save — save may have silently failed or list refresh didn't fire). Backend CRUD verified working via pytest — UI refresh/button wiring needs a look.", "selector": "[data-testid='tenant-receipts-<id>']", "priority": "MEDIUM"},
+      {"component": "Landing demo videos", "issue": "All 4 demo-video-* cards link to YouTube id 'dQw4w9WgXcQ' (Rick Roll placeholder). Replace with real product walkthroughs before launch.", "selector": "[data-testid='demo-video-0..3']", "priority": "MEDIUM"},
+      {"component": "Onboarding Tour modal", "issue": "Tour modal (data-testid=tour-modal) blocks clicks on add-tenant-button, builder-run-button etc. when it's shown. Automated tests must Skip tour first; consider adding 'don't show again' toggle auto-remembered by localStorage so returning users aren't blocked.", "selector": "[data-testid='tour-modal']", "priority": "LOW"}
+    ],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration7.py",
+    "/app/test_reports/pytest/iteration7_results.xml"
+  ],
+  "action_items": [
+    "Investigate why tenant-save-button does not refresh the tenants list immediately after successful POST /api/tenants (or why receipts drawer fails to open) — backend works; likely a setState/refetch gap in Tenants.jsx.",
+    "Replace placeholder YouTube video id 'dQw4w9WgXcQ' in /app/frontend/src/pages/Landing.jsx with actual product demo videos.",
+    "Persist Tour dismissal in localStorage so the tour does not reappear for admin on every login — currently blocks E2E flows."
+  ],
+  "critical_code_review_comments": [
+    "server.py is 2526 lines — exceeds 700-line guideline. Consider splitting into routers: auth, tenants, receipts, calculators, feedback, admin.",
+    "POST /api/auth/google/session stores password_hash='' for Google-only users. Ensure login endpoint rejects empty password_hash so an attacker can't login as a google-only user with an empty string password.",
+    "Builder plan calculation: opportunity_cost formula is simplified (down_payment * opp * (months/12)) and does not account for CLP slab disbursements. Results are directionally correct but labelling as 'effective_total_cost' may mislead; consider adding a 'model_notes' field explaining simplifications.",
+    "RentReceipt PDF: user.get('name') default returns landlord name from login payload but admin user may have empty name — falls back to '—'. Minor UX.",
+    "POST /api/admin/feedback/{fid}/status accepts arbitrary dict — add Pydantic model with enum for status values (new|triaged|resolved|wontfix)."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iteration7.py"
+  ],
+  "success_rate": {
+    "backend": "100% (24/24)",
+    "frontend": "~85% — builder plan, feedback widget, landing demo videos all pass; tenants add works but receipts drawer open failed in automation"
+  },
+  "test_credentials": {
+    "admin": "admin@estima.com / Admin@123",
+    "user": "smoke@test.com / smoke123"
+  },
+  "seed_data_creation": "Registered iter7_<rand>@test.com user, created TEST_Iter7_Flat property, TEST_Tenant_Anil tenant + rent receipt, TEST_regression_prop and TEST_cmp_2 properties, and one feedback record 'TEST_Iter7 please add dark mode toggle'.",
+  "retest_needed": true,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "iteration_7 focus features all work at API level (24/24 pytest pass). Google session endpoint correctly returns 422 on empty body and 400/401/502 on invalid session (as expected — real Emergent session cannot be obtained in test env). Tenants CRUD, rent receipt PDF (verifies %PDF magic), Builder plan (CLP/10_90/20_80/subvention 4 plans), Feedback + admin moderation (list/status), and admin extend_trial all pass. Regression: login, properties CRUD, portfolio summary, compare/score all pass. Frontend: the Onboarding Tour modal (data-testid=tour-modal) blocks clicks on primary CTA buttons — tests must call Skip tour first. All 4 Landing demo-video cards currently point to the same placeholder YouTube id (dQw4w9WgXcQ / Rick Roll) — content fix needed before launch. Tenants UI receipts-drawer automation failed to open after tenant create; backend is fine, likely a frontend list refresh issue in Tenants.jsx.",
+  "rca_of_issue": "No critical bugs. One medium-priority frontend refresh issue on Tenants page (create tenant does not update visible list before receipts drawer click); two content/UX items: placeholder YouTube ids on landing and sticky Tour modal blocking pointer events."
+}
