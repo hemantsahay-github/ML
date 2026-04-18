@@ -12,6 +12,7 @@ import Properties from "./pages/Properties";
 import Compare from "./pages/Compare";
 import Calculators from "./pages/Calculators";
 import Advisor from "./pages/Advisor";
+import SharedReport from "./pages/SharedReport";
 
 function App() {
   return (
@@ -33,6 +34,7 @@ function App() {
             <Route path="/" element={<Landing />} />
             <Route path="/login" element={<Login />} />
             <Route path="/register" element={<Register />} />
+            <Route path="/share/:id" element={<SharedReport />} />
             <Route
               path="/app"
               element={

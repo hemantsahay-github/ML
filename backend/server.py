@@ -21,6 +21,17 @@ from pydantic import BaseModel, EmailStr, Field, ConfigDict
 
 from emergentintegrations.llm.chat import LlmChat, UserMessage
 
+from fastapi.responses import StreamingResponse
+from reportlab.lib.pagesizes import A4
+from reportlab.lib import colors
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.units import mm
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+import csv
+import io
+
+from city_presets import CITY_PRESETS
+
 # ------------------------------------------------------------
 # Setup
 # ------------------------------------------------------------
@@ -609,6 +620,305 @@ async def advisor_history(session_id: Optional[str] = None, user: dict = Depends
         q["session_id"] = session_id
     docs = await db.advisor_messages.find(q, {"_id": 0}).sort("created_at", -1).to_list(100)
     return docs
+
+
+# ------------------------------------------------------------
+# City Presets
+# ------------------------------------------------------------
+@api_router.get("/presets/cities")
+async def get_city_presets():
+    return {"cities": CITY_PRESETS}
+
+
+# ------------------------------------------------------------
+# Comparison Export (CSV / PDF)
+# ------------------------------------------------------------
+def _compute_score(props: list, weights: dict) -> dict:
+    price_per_sqft = [(p["price"] / p["area_sqft"]) if p.get("area_sqft") else 0 for p in props]
+    max_pps = max(price_per_sqft) if price_per_sqft else 1
+    min_pps = min(price_per_sqft) if price_per_sqft else 0
+    results = []
+    for i, p in enumerate(props):
+        pps = price_per_sqft[i]
+        if max_pps == min_pps:
+            price_score = 7.5
+        else:
+            price_score = 10 - 9 * ((pps - min_pps) / (max_pps - min_pps))
+        w = weights
+        total = (
+            p.get("score_location", 5) * w.get("location", 0.25)
+            + p.get("score_amenities", 5) * w.get("amenities", 0.15)
+            + p.get("score_safety", 5) * w.get("safety", 0.15)
+            + p.get("score_commute", 5) * w.get("commute", 0.15)
+            + p.get("score_resale", 5) * w.get("resale", 0.15)
+            + price_score * w.get("price_value", 0.15)
+        )
+        results.append({
+            "id": p["id"],
+            "name": p["name"],
+            "type": p["type"],
+            "location": p.get("location", ""),
+            "price": p["price"],
+            "area_sqft": p.get("area_sqft", 0),
+            "price_per_sqft": round(pps, 2),
+            "price_score": round(price_score, 2),
+            "total_score": round(total, 2),
+            "breakdown": {
+                "location": p.get("score_location", 5),
+                "amenities": p.get("score_amenities", 5),
+                "safety": p.get("score_safety", 5),
+                "commute": p.get("score_commute", 5),
+                "resale": p.get("score_resale", 5),
+                "price_value": round(price_score, 2),
+            },
+        })
+    results.sort(key=lambda x: x["total_score"], reverse=True)
+    return results
+
+
+class ExportRequest(BaseModel):
+    property_ids: List[str]
+    weights: dict = Field(default_factory=lambda: {
+        "location": 0.25, "amenities": 0.15, "safety": 0.15,
+        "commute": 0.15, "resale": 0.15, "price_value": 0.15,
+    })
+
+
+def _inr(n: float) -> str:
+    try:
+        n = float(n)
+    except Exception:
+        return str(n)
+    a = abs(n)
+    if a >= 1e7:
+        return f"INR {n/1e7:.2f} Cr"
+    if a >= 1e5:
+        return f"INR {n/1e5:.2f} L"
+    return f"INR {n:,.0f}"
+
+
+@api_router.post("/compare/export/csv")
+async def export_csv(body: ExportRequest, user: dict = Depends(get_current_user)):
+    props = await db.properties.find(
+        {"user_id": user["id"], "id": {"$in": body.property_ids}}, {"_id": 0}
+    ).to_list(100)
+    if not props:
+        raise HTTPException(404, "No matching properties")
+    results = _compute_score(props, body.weights)
+
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow(["Rank", "Name", "Type", "Location", "Price (INR)", "Area (sqft)", "INR/sqft",
+                     "Total Score", "Location", "Amenities", "Safety", "Commute", "Resale", "Price/Value"])
+    for i, r in enumerate(results, 1):
+        writer.writerow([
+            i, r["name"], r["type"], r["location"], int(r["price"]), int(r["area_sqft"]),
+            int(r["price_per_sqft"]), r["total_score"],
+            r["breakdown"]["location"], r["breakdown"]["amenities"], r["breakdown"]["safety"],
+            r["breakdown"]["commute"], r["breakdown"]["resale"], r["breakdown"]["price_value"],
+        ])
+    buf.seek(0)
+    return StreamingResponse(
+        iter([buf.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=estima-comparison.csv"},
+    )
+
+
+@api_router.post("/compare/export/pdf")
+async def export_pdf(body: ExportRequest, user: dict = Depends(get_current_user)):
+    props = await db.properties.find(
+        {"user_id": user["id"], "id": {"$in": body.property_ids}}, {"_id": 0}
+    ).to_list(100)
+    if not props:
+        raise HTTPException(404, "No matching properties")
+    results = _compute_score(props, body.weights)
+
+    buf = io.BytesIO()
+    doc = SimpleDocTemplate(buf, pagesize=A4, leftMargin=18 * mm, rightMargin=18 * mm,
+                            topMargin=18 * mm, bottomMargin=18 * mm)
+    styles = getSampleStyleSheet()
+    story = []
+
+    # Header
+    title_style = ParagraphStyle("title", parent=styles["Title"], fontName="Helvetica-Bold",
+                                 fontSize=24, textColor=colors.HexColor("#0A0908"), spaceAfter=6)
+    sub_style = ParagraphStyle("sub", parent=styles["Normal"], fontSize=9,
+                               textColor=colors.HexColor("#666666"), spaceAfter=20)
+
+    story.append(Paragraph("Estima — Property Decision Report", title_style))
+    story.append(Paragraph(
+        f"Prepared for {user.get('name') or user['email']} · {datetime.now(timezone.utc).strftime('%d %b %Y')}",
+        sub_style,
+    ))
+
+    # Winner box
+    winner = results[0]
+    winner_style = ParagraphStyle("winner", parent=styles["Heading2"], fontSize=16,
+                                  textColor=colors.HexColor("#C85A32"), spaceAfter=4)
+    story.append(Paragraph("Recommended winner", ParagraphStyle(
+        "eyebrow", parent=styles["Normal"], fontSize=8, textColor=colors.HexColor("#999999"),
+        spaceAfter=6)))
+    story.append(Paragraph(winner["name"], winner_style))
+    story.append(Paragraph(
+        f"Score {winner['total_score']} · {_inr(winner['price'])} · {int(winner['area_sqft'])} sqft · {_inr(winner['price_per_sqft'])}/sqft",
+        styles["Normal"],
+    ))
+    story.append(Spacer(1, 16))
+
+    # Ranking table
+    header = ["#", "Property", "Type", "Price", "INR/sqft", "Score"]
+    data = [header]
+    for i, r in enumerate(results, 1):
+        data.append([
+            str(i),
+            f"{r['name']}\n{r['location']}",
+            r["type"].title(),
+            _inr(r["price"]),
+            _inr(r["price_per_sqft"]),
+            str(r["total_score"]),
+        ])
+    t = Table(data, repeatRows=1, colWidths=[12 * mm, 60 * mm, 22 * mm, 32 * mm, 30 * mm, 20 * mm])
+    t.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#141311")),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.HexColor("#F4F0EA")),
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("FONTSIZE", (0, 0), (-1, -1), 9),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.HexColor("#FAFAFA"), colors.white]),
+        ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#E0DDD8")),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 8),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 8),
+        ("TOPPADDING", (0, 0), (-1, -1), 6),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+    ]))
+    story.append(t)
+    story.append(Spacer(1, 20))
+
+    # Breakdown
+    story.append(Paragraph("Score breakdown (0-10)", styles["Heading3"]))
+    breakdown_data = [["Property", "Location", "Amenities", "Safety", "Commute", "Resale", "Price/Value"]]
+    for r in results:
+        b = r["breakdown"]
+        breakdown_data.append([
+            r["name"], str(b["location"]), str(b["amenities"]), str(b["safety"]),
+            str(b["commute"]), str(b["resale"]), str(b["price_value"]),
+        ])
+    bt = Table(breakdown_data, repeatRows=1)
+    bt.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#141311")),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.HexColor("#F4F0EA")),
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("FONTSIZE", (0, 0), (-1, -1), 8.5),
+        ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#E0DDD8")),
+        ("TOPPADDING", (0, 0), (-1, -1), 5),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+    ]))
+    story.append(bt)
+
+    story.append(Spacer(1, 20))
+    story.append(Paragraph(
+        "<i>Weights used: " + ", ".join(f"{k}={int(v*100)}%" for k, v in body.weights.items()) + "</i>",
+        ParagraphStyle("foot", parent=styles["Normal"], fontSize=8, textColor=colors.HexColor("#999999")),
+    ))
+    story.append(Spacer(1, 8))
+    story.append(Paragraph(
+        "Generated by Estima. Numbers are computed from user-supplied inputs; not financial advice.",
+        ParagraphStyle("foot", parent=styles["Normal"], fontSize=7, textColor=colors.HexColor("#999999")),
+    ))
+
+    doc.build(story)
+    buf.seek(0)
+    return StreamingResponse(
+        iter([buf.getvalue()]),
+        media_type="application/pdf",
+        headers={"Content-Disposition": "attachment; filename=estima-comparison.pdf"},
+    )
+
+
+# ------------------------------------------------------------
+# Shareable Public Comparison
+# ------------------------------------------------------------
+class ShareCreateRequest(BaseModel):
+    property_ids: List[str]
+    weights: dict = Field(default_factory=lambda: {
+        "location": 0.25, "amenities": 0.15, "safety": 0.15,
+        "commute": 0.15, "resale": 0.15, "price_value": 0.15,
+    })
+    title: Optional[str] = None
+
+
+@api_router.post("/shares")
+async def create_share(body: ShareCreateRequest, user: dict = Depends(get_current_user)):
+    props = await db.properties.find(
+        {"user_id": user["id"], "id": {"$in": body.property_ids}}, {"_id": 0}
+    ).to_list(100)
+    if not props:
+        raise HTTPException(404, "No matching properties")
+    results = _compute_score(props, body.weights)
+
+    share_id = secrets.token_urlsafe(10)
+    # snapshot so later edits to the property don't change the shared report
+    snapshot_props = []
+    for p in props:
+        snapshot_props.append({
+            "id": p["id"],
+            "name": p["name"],
+            "type": p["type"],
+            "location": p.get("location", ""),
+            "price": p["price"],
+            "area_sqft": p.get("area_sqft", 0),
+            "loan_rate": p.get("loan_rate", 0),
+            "loan_tenure_years": p.get("loan_tenure_years", 0),
+            "expected_appreciation": p.get("expected_appreciation", 0),
+            "rental_yield": p.get("rental_yield", 0),
+            "notes": p.get("notes", ""),
+        })
+    doc = {
+        "share_id": share_id,
+        "user_id": user["id"],
+        "owner_name": user.get("name", ""),
+        "title": body.title or "Property decision report",
+        "weights": body.weights,
+        "properties": snapshot_props,
+        "results": results,
+        "winner": results[0] if results else None,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.shares.insert_one(doc.copy())
+    return {"share_id": share_id, "url": f"/share/{share_id}"}
+
+
+@api_router.get("/shares/{share_id}")
+async def get_share(share_id: str):
+    doc = await db.shares.find_one({"share_id": share_id}, {"_id": 0, "user_id": 0})
+    if not doc:
+        raise HTTPException(404, "Share not found")
+    return doc
+
+
+@api_router.get("/shares")
+async def list_shares(user: dict = Depends(get_current_user)):
+    docs = await db.shares.find({"user_id": user["id"]}, {"_id": 0}).sort("created_at", -1).to_list(100)
+    # summarize
+    return [
+        {
+            "share_id": d["share_id"],
+            "title": d.get("title"),
+            "created_at": d.get("created_at"),
+            "winner": d.get("winner", {}).get("name") if d.get("winner") else None,
+            "num_properties": len(d.get("properties", [])),
+        }
+        for d in docs
+    ]
+
+
+@api_router.delete("/shares/{share_id}")
+async def delete_share(share_id: str, user: dict = Depends(get_current_user)):
+    res = await db.shares.delete_one({"share_id": share_id, "user_id": user["id"]})
+    if res.deleted_count == 0:
+        raise HTTPException(404, "Share not found")
+    return {"ok": True}
 
 
 # ------------------------------------------------------------

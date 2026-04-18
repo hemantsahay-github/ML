@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import api, { formatApiErrorDetail } from "../lib/api";
 import { toast } from "sonner";
 import { inr } from "../lib/format";
-import { Plus, Trash, PencilSimple, X } from "@phosphor-icons/react";
+import { Plus, Trash, PencilSimple, X, MapPin } from "@phosphor-icons/react";
 
 const blank = {
   name: "",
@@ -30,6 +30,7 @@ export default function Properties() {
   const [loading, setLoading] = useState(true);
   const [form, setForm] = useState(null); // editing form
   const [isEdit, setIsEdit] = useState(false);
+  const [cities, setCities] = useState([]);
 
   const load = async () => {
     setLoading(true);
@@ -45,6 +46,7 @@ export default function Properties() {
 
   useEffect(() => {
     load();
+    api.get("/presets/cities").then(({ data }) => setCities(data.cities || [])).catch(() => {});
   }, []);
 
   const openNew = () => {
@@ -187,6 +189,37 @@ export default function Properties() {
             <Field label="Name" required>
               <input className="input-dark w-full px-3 py-2" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} required data-testid="form-name" />
             </Field>
+
+            {cities.length > 0 && (
+              <div className="border hairline bg-[hsl(var(--muted))] p-4">
+                <div className="flex items-center gap-2 mb-3 text-[hsl(var(--secondary))]">
+                  <MapPin size={14} weight="duotone" />
+                  <span className="eyebrow text-[hsl(var(--secondary))]">Apply city preset</span>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  {cities.map((c) => (
+                    <button
+                      type="button"
+                      key={c.city}
+                      onClick={() =>
+                        setForm({
+                          ...form,
+                          location: c.city,
+                          expected_appreciation: c.expected_appreciation,
+                          rental_yield: c.rental_yield,
+                        })
+                      }
+                      className="btn-ghost px-3 py-1.5 text-xs"
+                      data-testid={`city-preset-${c.city.replace(/\s+/g, "-")}`}
+                      title={c.notes}
+                    >
+                      {c.city} · {c.expected_appreciation}% / {c.rental_yield}%
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
             <div className="grid grid-cols-2 gap-4">
               <Field label="Type">
                 <select className="input-dark w-full px-3 py-2" value={form.type} onChange={(e) => setForm({ ...form, type: e.target.value })} data-testid="form-type">

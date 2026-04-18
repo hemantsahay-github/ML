@@ -3,7 +3,7 @@ import api, { formatApiErrorDetail } from "../lib/api";
 import { toast } from "sonner";
 import { inr } from "../lib/format";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Legend, CartesianGrid, RadarChart, Radar, PolarGrid, PolarAngleAxis, PolarRadiusAxis } from "recharts";
-import { Trophy, Scales } from "@phosphor-icons/react";
+import { Trophy, Scales, FileCsv, FilePdf, Share } from "@phosphor-icons/react";
 
 const defaultWeights = {
   location: 0.25,
@@ -51,6 +51,60 @@ export default function Compare() {
       toast.error(formatApiErrorDetail(e.response?.data?.detail));
     } finally {
       setScoring(false);
+    }
+  };
+
+  const downloadBlob = (blob, filename) => {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  };
+
+  const exportCsv = async () => {
+    try {
+      const res = await api.post(
+        "/compare/export/csv",
+        { property_ids: selected, weights },
+        { responseType: "blob" }
+      );
+      downloadBlob(res.data, "estima-comparison.csv");
+      toast.success("CSV downloaded");
+    } catch (e) {
+      toast.error("Export failed");
+    }
+  };
+
+  const exportPdf = async () => {
+    try {
+      const res = await api.post(
+        "/compare/export/pdf",
+        { property_ids: selected, weights },
+        { responseType: "blob" }
+      );
+      downloadBlob(res.data, "estima-comparison.pdf");
+      toast.success("PDF downloaded");
+    } catch (e) {
+      toast.error("Export failed");
+    }
+  };
+
+  const createShare = async () => {
+    try {
+      const { data } = await api.post("/shares", { property_ids: selected, weights });
+      const link = `${window.location.origin}/share/${data.share_id}`;
+      try {
+        await navigator.clipboard.writeText(link);
+        toast.success("Share link copied to clipboard", { description: link });
+      } catch {
+        toast.success("Share link created", { description: link });
+      }
+    } catch (e) {
+      toast.error(formatApiErrorDetail(e.response?.data?.detail));
     }
   };
 
@@ -150,6 +204,19 @@ export default function Compare() {
 
           {result && (
             <section className="mt-12 space-y-10" data-testid="compare-results">
+              {/* Action buttons */}
+              <div className="flex flex-wrap gap-3">
+                <button onClick={exportCsv} className="btn-ghost px-4 py-2 text-sm inline-flex items-center gap-2" data-testid="export-csv-button">
+                  <FileCsv size={16} weight="duotone" /> Export CSV
+                </button>
+                <button onClick={exportPdf} className="btn-ghost px-4 py-2 text-sm inline-flex items-center gap-2" data-testid="export-pdf-button">
+                  <FilePdf size={16} weight="duotone" /> Export PDF
+                </button>
+                <button onClick={createShare} className="btn-primary px-4 py-2 text-sm inline-flex items-center gap-2" data-testid="share-report-button">
+                  <Share size={16} weight="bold" /> Share link
+                </button>
+              </div>
+
               {/* Winner */}
               <div className="card-flat p-8 border-[hsl(var(--secondary))]">
                 <div className="flex items-center gap-3 text-[hsl(var(--secondary))] mb-4">
