@@ -231,7 +231,10 @@ export default function Properties() {
                     <div className="mt-3 text-xs text-[hsl(var(--secondary))]">
                       Now worth {inr(p.current_value)}
                       {p.purchase_price
-                        ? ` · ${(((p.current_value - p.purchase_price) / p.purchase_price) * 100).toFixed(1)}%`
+                        ? (() => {
+                            const pct = ((p.current_value - p.purchase_price) / p.purchase_price) * 100;
+                            return ` · ${pct >= 0 ? "+" : ""}${pct.toFixed(1)}%`;
+                          })()
                         : ""}
                     </div>
                   ) : null}

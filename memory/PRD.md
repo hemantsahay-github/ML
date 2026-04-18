@@ -44,3 +44,12 @@ Personal property buying options and decision making and managing — comparing 
 - P2: Suppress recharts width/height console warning
 - P2: Tighten CORS to explicit origin for production (currently regex=".*")
 - P2: Split server.py by domain for maintainability
+
+## 2026-04-18 — Portfolio (Owned Properties) Feature
+- Property model extended: `status` (evaluating|owned), `purchase_date`, `purchase_price`, `current_value`, `current_loan_balance`, `monthly_rent_income`, `rented`
+- New `GET /api/portfolio/summary` — totals (current value, equity, loan balance, appreciation %, net monthly cashflow) + per-property breakdown
+- New `/app/portfolio` page with 4 summary tiles, pie chart (2+ properties), per-asset cards, insight strip
+- Properties page: `evaluating` / `owned` tabs + status badge on cards
+- Properties form: Status toggle with conditional owned-fields (purchase date/price, current value, outstanding loan, rented + rent income)
+- Dashboard: 4-metric grid now including owned portfolio value + equity
+- Tests: 14/14 backend passed (iteration_3.json)
