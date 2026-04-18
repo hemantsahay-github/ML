@@ -77,3 +77,25 @@ Personal property buying options and decision making and managing — comparing 
 - Floating help FAB bottom-right (repositioned to right-24 to avoid Emergent badge)
 
 **Tests:** iteration_5.json — 34/34 backend pass, frontend 100% after FAB z-index fix.
+
+## 2026-04-18 — Referrals · Resale · Loan Optimizer · Enhanced vs-Markets · Disclaimer
+**Referrals:**
+- Auto-generated referral_code per user. Register with ?ref=CODE grants referrer +30 days Pro immediately.
+- GET /api/referrals/me (code, event log, totals). /app/referrals page with Copy+Share buttons and stats.
+
+**Resale estimator (/api/calc/resale-estimate):**
+- Breakeven sale price and target-profit sale price after broker fee + LTCG + net carrying cost.
+- Projected net-in-hand at assumed appreciation and implied CAGR on capital invested.
+
+**Loan optimizer (/api/calc/loan-optimizer):**
+- Sweeps down-payment 5-100% in 5% steps. Surfaces cashflow-neutral DP%, max cashflow, best cash-on-cash ROI.
+
+**vs-markets extended:**
+- Now includes sold properties (sold_price as terminal value) and owned rental income (accumulated year-by-year).
+- property_plus_rental series; winner computed including rental yield.
+
+**Disclaimer:**
+- Global <Disclaimer /> component (inline + compact). /disclaimer public page. Footer link on Landing.
+- Added to Portfolio, Compare, Calculators, Referrals, Advisor (compact) pages.
+
+**Tests:** iteration_6.json — 30/30 backend, 100% frontend.
