@@ -11,20 +11,39 @@ import {
   Percent,
   ArrowRight,
   Bank,
+  Receipt,
 } from "@phosphor-icons/react";
-import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer, Legend } from "recharts";
+import {
+  PieChart,
+  Pie,
+  Cell,
+  Tooltip,
+  ResponsiveContainer,
+  Legend,
+  AreaChart,
+  Area,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Line,
+} from "recharts";
 
 const COLORS = ["#C85A32", "#B89B72", "#5E7C60", "#4A5568", "#8B6F47", "#6B4423"];
 
 export default function Portfolio() {
   const [summary, setSummary] = useState(null);
+  const [timeline, setTimeline] = useState(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     (async () => {
       try {
-        const { data } = await api.get("/portfolio/summary");
-        setSummary(data);
+        const [sRes, tRes] = await Promise.all([
+          api.get("/portfolio/summary"),
+          api.get("/portfolio/timeline"),
+        ]);
+        setSummary(sRes.data);
+        setTimeline(tRes.data);
       } finally {
         setLoading(false);
       }
@@ -38,7 +57,7 @@ export default function Portfolio() {
       </div>
     );
 
-  const empty = !summary || summary.count === 0;
+  const empty = !summary || (summary.count === 0 && summary.sold_count === 0);
 
   return (
     <div className="max-w-7xl mx-auto px-8 py-10" data-testid="portfolio-page">
@@ -69,7 +88,18 @@ export default function Portfolio() {
       ) : (
         <>
           {/* Summary tiles */}
-          <div className="grid md:grid-cols-4 gap-5 mb-10">
+          <div className="grid md:grid-cols-5 gap-5 mb-10">
+            <Tile
+              label="Net worth"
+              value={inr(summary.total_net_worth || summary.total_equity)}
+              sub={
+                summary.total_realized_gains
+                  ? `includes ${inr(summary.total_realized_gains)} realized`
+                  : "real-estate only"
+              }
+              icon={<Bank size={20} weight="duotone" />}
+              testid="tile-networth"
+            />
             <Tile
               label="Current value"
               value={inr(summary.total_current_value)}
@@ -85,18 +115,22 @@ export default function Portfolio() {
               testid="tile-equity"
             />
             <Tile
-              label="Net appreciation"
-              value={`${summary.total_appreciation_pct >= 0 ? "+" : ""}${summary.total_appreciation_pct}%`}
-              sub={inr(summary.total_appreciation_inr)}
-              icon={
-                summary.total_appreciation_pct >= 0 ? (
-                  <TrendUp size={20} weight="duotone" />
-                ) : (
-                  <TrendDown size={20} weight="duotone" />
-                )
+              label="Realized gains"
+              value={inr(summary.total_realized_gains || 0)}
+              sub={
+                summary.sold_count
+                  ? `from ${summary.sold_count} sale${summary.sold_count > 1 ? "s" : ""}`
+                  : "no sales yet"
               }
-              accent={summary.total_appreciation_pct >= 0 ? "good" : "bad"}
-              testid="tile-appreciation"
+              icon={<Receipt size={20} weight="duotone" />}
+              accent={
+                summary.total_realized_gains > 0
+                  ? "good"
+                  : summary.total_realized_gains < 0
+                    ? "bad"
+                    : undefined
+              }
+              testid="tile-realized"
             />
             <Tile
               label="Monthly cashflow"
@@ -107,6 +141,79 @@ export default function Portfolio() {
               testid="tile-cashflow"
             />
           </div>
+
+          {/* Timeline */}
+          {timeline?.series?.length > 0 && (
+            <div className="card-flat p-6 mb-10" data-testid="portfolio-timeline">
+              <div className="flex items-end justify-between mb-5">
+                <div>
+                  <div className="eyebrow mb-1">Your real-estate story</div>
+                  <div className="font-serif text-2xl">
+                    Net worth since {timeline.earliest_year}
+                  </div>
+                </div>
+                <div className="text-xs text-muted-foreground">
+                  {timeline.series.length} years · property value + realized cash − loan
+                </div>
+              </div>
+              <div style={{ width: "100%", height: 340 }}>
+                <ResponsiveContainer>
+                  <AreaChart data={timeline.series}>
+                    <defs>
+                      <linearGradient id="gNW" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="0%" stopColor="#C85A32" stopOpacity={0.45} />
+                        <stop offset="100%" stopColor="#C85A32" stopOpacity={0.02} />
+                      </linearGradient>
+                      <linearGradient id="gEq" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="0%" stopColor="#B89B72" stopOpacity={0.3} />
+                        <stop offset="100%" stopColor="#B89B72" stopOpacity={0.02} />
+                      </linearGradient>
+                    </defs>
+                    <CartesianGrid stroke="hsl(var(--border))" strokeDasharray="2 4" />
+                    <XAxis dataKey="year" stroke="hsl(var(--muted-foreground))" />
+                    <YAxis stroke="hsl(var(--muted-foreground))" tickFormatter={(v) => inr(v)} />
+                    <Tooltip formatter={(v) => inrFull(v)} />
+                    <Legend />
+                    <Area
+                      type="monotone"
+                      dataKey="total_value"
+                      name="Property value"
+                      stroke="#B89B72"
+                      fill="url(#gEq)"
+                      strokeWidth={2}
+                    />
+                    <Area
+                      type="monotone"
+                      dataKey="net_worth"
+                      name="Net worth"
+                      stroke="#C85A32"
+                      fill="url(#gNW)"
+                      strokeWidth={2.5}
+                    />
+                    <Line
+                      type="monotone"
+                      dataKey="loan_balance"
+                      name="Loan balance"
+                      stroke="#4A5568"
+                      strokeWidth={1.5}
+                      dot={false}
+                    />
+                    {summary.total_realized_gains ? (
+                      <Line
+                        type="stepAfter"
+                        dataKey="realized_gains"
+                        name="Realized cash"
+                        stroke="#5E7C60"
+                        strokeWidth={1.5}
+                        strokeDasharray="4 4"
+                        dot={false}
+                      />
+                    ) : null}
+                  </AreaChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+          )}
 
           {/* Allocation chart */}
           {summary.items.length > 1 && (
@@ -139,7 +246,12 @@ export default function Portfolio() {
           {/* Owned properties list */}
           <div className="mb-3 eyebrow">Owned properties</div>
           <div className="grid md:grid-cols-2 gap-6">
-            {summary.items.map((p) => (
+            {summary.items.length === 0 ? (
+              <div className="card-flat p-6 text-sm text-muted-foreground md:col-span-2" data-testid="owned-empty">
+                No owned properties yet. Add one via the Properties page.
+              </div>
+            ) : (
+              summary.items.map((p) => (
               <div key={p.id} className="card-flat p-6" data-testid={`portfolio-item-${p.id}`}>
                 <div className="flex justify-between items-start mb-4">
                   <div>
@@ -182,8 +294,70 @@ export default function Portfolio() {
                   />
                 </div>
               </div>
-            ))}
+              ))
+            )}
           </div>
+
+          {/* Sold ledger */}
+          {summary.sold_items && summary.sold_items.length > 0 && (
+            <div className="mt-12">
+              <div className="flex items-end justify-between mb-3">
+                <div className="eyebrow">Sold ledger</div>
+                <div className="text-xs text-muted-foreground">
+                  Realized:{" "}
+                  <span className={summary.total_realized_gains >= 0 ? "text-[hsl(var(--secondary))]" : "text-destructive"}>
+                    {summary.total_realized_gains >= 0 ? "+" : ""}
+                    {inr(summary.total_realized_gains)}
+                  </span>
+                </div>
+              </div>
+              <div className="card-flat overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead className="text-left text-muted-foreground border-b hairline">
+                    <tr>
+                      {["Property", "Bought", "Sold", "Purchase", "Sale", "Gain", "Return"].map((h) => (
+                        <th key={h} className="p-4 font-normal eyebrow">
+                          {h}
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {summary.sold_items.map((s) => (
+                      <tr key={s.id} className="border-b hairline last:border-0" data-testid={`sold-row-${s.id}`}>
+                        <td className="p-4">
+                          <div className="font-serif text-lg">{s.name}</div>
+                          <div className="text-xs text-muted-foreground">
+                            {s.type} · {s.location}
+                          </div>
+                        </td>
+                        <td className="p-4 text-xs text-muted-foreground">
+                          {s.purchase_date
+                            ? new Date(s.purchase_date).toLocaleDateString("en-IN", { month: "short", year: "numeric" })
+                            : "—"}
+                        </td>
+                        <td className="p-4 text-xs text-muted-foreground">
+                          {s.sold_date
+                            ? new Date(s.sold_date).toLocaleDateString("en-IN", { month: "short", year: "numeric" })
+                            : "—"}
+                        </td>
+                        <td className="p-4">{inr(s.purchase_price)}</td>
+                        <td className="p-4">{inr(s.sold_price)}</td>
+                        <td className={`p-4 num-metric ${s.gain >= 0 ? "text-[hsl(var(--secondary))]" : "text-destructive"}`}>
+                          {s.gain >= 0 ? "+" : ""}
+                          {inr(s.gain)}
+                        </td>
+                        <td className={`p-4 num-metric ${s.gain_pct >= 0 ? "text-[hsl(var(--secondary))]" : "text-destructive"}`}>
+                          {s.gain_pct >= 0 ? "+" : ""}
+                          {s.gain_pct}%
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
 
           {/* Insight strip */}
           <div className="mt-10 card-flat p-6 border-[hsl(var(--secondary))]">

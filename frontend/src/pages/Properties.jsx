@@ -30,6 +30,8 @@ const blank = {
   current_loan_balance: "",
   monthly_rent_income: 0,
   rented: false,
+  sold_date: "",
+  sold_price: "",
 };
 
 export default function Properties() {
@@ -98,10 +100,11 @@ export default function Properties() {
         "monthly_rent_income",
       ].forEach((k) => (payload[k] = Number(payload[k] || 0)));
       // optional owned numbers (empty string → null)
-      ["purchase_price", "current_value", "current_loan_balance"].forEach((k) => {
+      ["purchase_price", "current_value", "current_loan_balance", "sold_price"].forEach((k) => {
         payload[k] = payload[k] === "" || payload[k] === null || payload[k] === undefined ? null : Number(payload[k]);
       });
       if (!payload.purchase_date) payload.purchase_date = null;
+      if (!payload.sold_date) payload.sold_date = null;
       payload.rented = !!payload.rented;
       if (isEdit) {
         await api.put(`/properties/${form.id}`, payload);
@@ -137,6 +140,7 @@ export default function Properties() {
     all: items.length,
     evaluating: items.filter((p) => (p.status || "evaluating") === "evaluating").length,
     owned: items.filter((p) => p.status === "owned").length,
+    sold: items.filter((p) => p.status === "sold").length,
   };
 
   return (
@@ -172,6 +176,7 @@ export default function Properties() {
               ["all", "All"],
               ["evaluating", "Evaluating"],
               ["owned", "Owned"],
+              ["sold", "Sold"],
             ].map(([id, label]) => (
               <button
                 key={id}
@@ -204,11 +209,13 @@ export default function Properties() {
                           className={`text-[0.6rem] tracking-widest uppercase px-1.5 py-0.5 border ${
                             p.status === "owned"
                               ? "border-[hsl(var(--secondary))] text-[hsl(var(--secondary))]"
-                              : "hairline text-muted-foreground"
+                              : p.status === "sold"
+                                ? "border-[hsl(var(--primary))] text-[hsl(var(--primary))]"
+                                : "hairline text-muted-foreground"
                           }`}
                           data-testid={`status-badge-${p.id}`}
                         >
-                          {p.status === "owned" ? "Owned" : "Evaluating"}
+                          {p.status === "owned" ? "Owned" : p.status === "sold" ? "Sold" : "Evaluating"}
                         </span>
                       </div>
                       <div className="font-serif text-2xl mt-1">{p.name}</div>
@@ -236,6 +243,26 @@ export default function Properties() {
                             return ` · ${pct >= 0 ? "+" : ""}${pct.toFixed(1)}%`;
                           })()
                         : ""}
+                    </div>
+                  ) : null}
+                  {p.status === "sold" && p.sold_price ? (
+                    <div className="mt-3 text-xs" data-testid={`sold-summary-${p.id}`}>
+                      {(() => {
+                        const base = p.purchase_price || p.price || 0;
+                        const gain = p.sold_price - base;
+                        const pct = base ? (gain / base) * 100 : 0;
+                        const positive = gain >= 0;
+                        return (
+                          <span className={positive ? "text-[hsl(var(--secondary))]" : "text-destructive"}>
+                            Sold for {inr(p.sold_price)} · {positive ? "+" : ""}
+                            {inr(gain)} ({positive ? "+" : ""}
+                            {pct.toFixed(1)}%)
+                            {p.sold_date
+                              ? ` · ${new Date(p.sold_date).toLocaleDateString("en-IN", { month: "short", year: "numeric" })}`
+                              : ""}
+                          </span>
+                        );
+                      })()}
                     </div>
                   ) : null}
                   <div className="mt-4 pt-4 border-t hairline grid grid-cols-3 gap-2 text-xs">
@@ -351,6 +378,7 @@ export default function Properties() {
                 {[
                   ["evaluating", "Evaluating"],
                   ["owned", "Owned"],
+                  ["sold", "Sold"],
                 ].map(([id, label]) => (
                   <button
                     type="button"
@@ -368,7 +396,7 @@ export default function Properties() {
                 ))}
               </div>
 
-              {form.status === "owned" && (
+              {(form.status === "owned" || form.status === "sold") && (
                 <div className="space-y-4" data-testid="owned-fields">
                   <div className="grid grid-cols-2 gap-4">
                     <Field label="Purchase date">
@@ -390,46 +418,74 @@ export default function Properties() {
                       />
                     </Field>
                   </div>
-                  <div className="grid grid-cols-2 gap-4">
-                    <Field label="Current value (₹)">
-                      <input
-                        type="number"
-                        className="input-dark w-full px-3 py-2"
-                        value={form.current_value ?? ""}
-                        onChange={(e) => setForm({ ...form, current_value: e.target.value })}
-                        data-testid="form-current-value"
-                      />
-                    </Field>
-                    <Field label="Outstanding loan (₹)">
-                      <input
-                        type="number"
-                        className="input-dark w-full px-3 py-2"
-                        value={form.current_loan_balance ?? ""}
-                        onChange={(e) => setForm({ ...form, current_loan_balance: e.target.value })}
-                        data-testid="form-current-loan"
-                      />
-                    </Field>
-                  </div>
-                  <label className="flex items-center gap-3">
-                    <input
-                      type="checkbox"
-                      checked={!!form.rented}
-                      onChange={(e) => setForm({ ...form, rented: e.target.checked })}
-                      className="accent-[hsl(var(--primary))] h-4 w-4"
-                      data-testid="form-rented"
-                    />
-                    <span className="text-sm">Currently rented out</span>
-                  </label>
-                  {form.rented && (
-                    <Field label="Monthly rent income (₹)">
-                      <input
-                        type="number"
-                        className="input-dark w-full px-3 py-2"
-                        value={form.monthly_rent_income || 0}
-                        onChange={(e) => setForm({ ...form, monthly_rent_income: e.target.value })}
-                        data-testid="form-rent-income"
-                      />
-                    </Field>
+
+                  {form.status === "owned" && (
+                    <>
+                      <div className="grid grid-cols-2 gap-4">
+                        <Field label="Current value (₹)">
+                          <input
+                            type="number"
+                            className="input-dark w-full px-3 py-2"
+                            value={form.current_value ?? ""}
+                            onChange={(e) => setForm({ ...form, current_value: e.target.value })}
+                            data-testid="form-current-value"
+                          />
+                        </Field>
+                        <Field label="Outstanding loan (₹)">
+                          <input
+                            type="number"
+                            className="input-dark w-full px-3 py-2"
+                            value={form.current_loan_balance ?? ""}
+                            onChange={(e) => setForm({ ...form, current_loan_balance: e.target.value })}
+                            data-testid="form-current-loan"
+                          />
+                        </Field>
+                      </div>
+                      <label className="flex items-center gap-3">
+                        <input
+                          type="checkbox"
+                          checked={!!form.rented}
+                          onChange={(e) => setForm({ ...form, rented: e.target.checked })}
+                          className="accent-[hsl(var(--primary))] h-4 w-4"
+                          data-testid="form-rented"
+                        />
+                        <span className="text-sm">Currently rented out</span>
+                      </label>
+                      {form.rented && (
+                        <Field label="Monthly rent income (₹)">
+                          <input
+                            type="number"
+                            className="input-dark w-full px-3 py-2"
+                            value={form.monthly_rent_income || 0}
+                            onChange={(e) => setForm({ ...form, monthly_rent_income: e.target.value })}
+                            data-testid="form-rent-income"
+                          />
+                        </Field>
+                      )}
+                    </>
+                  )}
+
+                  {form.status === "sold" && (
+                    <div className="grid grid-cols-2 gap-4">
+                      <Field label="Sold date">
+                        <input
+                          type="date"
+                          className="input-dark w-full px-3 py-2"
+                          value={form.sold_date || ""}
+                          onChange={(e) => setForm({ ...form, sold_date: e.target.value })}
+                          data-testid="form-sold-date"
+                        />
+                      </Field>
+                      <Field label="Sold price (₹)">
+                        <input
+                          type="number"
+                          className="input-dark w-full px-3 py-2"
+                          value={form.sold_price ?? ""}
+                          onChange={(e) => setForm({ ...form, sold_price: e.target.value })}
+                          data-testid="form-sold-price"
+                        />
+                      </Field>
+                    </div>
                   )}
                 </div>
               )}

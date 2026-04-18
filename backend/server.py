@@ -227,7 +227,7 @@ async def refresh_token(request: Request, response: Response):
 # Properties Models
 # ------------------------------------------------------------
 PropertyType = Literal["flat", "villa", "plot", "commercial", "other"]
-PropertyStatus = Literal["evaluating", "owned"]
+PropertyStatus = Literal["evaluating", "owned", "sold"]
 
 
 class PropertyIn(BaseModel):
@@ -259,6 +259,9 @@ class PropertyIn(BaseModel):
     current_loan_balance: Optional[float] = None
     monthly_rent_income: float = 0.0
     rented: bool = False
+    # Sold tracking
+    sold_date: Optional[str] = None
+    sold_price: Optional[float] = None
 
 
 class PropertyOut(PropertyIn):
@@ -270,10 +273,9 @@ class PropertyOut(PropertyIn):
 @api_router.get("/properties", response_model=List[PropertyOut])
 async def list_properties(status: Optional[str] = None, user: dict = Depends(get_current_user)):
     q = {"user_id": user["id"]}
-    if status in ("evaluating", "owned"):
+    if status in ("evaluating", "owned", "sold"):
         q["status"] = status
     docs = await db.properties.find(q, {"_id": 0}).to_list(500)
-    # backfill status for old records
     for d in docs:
         d.setdefault("status", "evaluating")
     return docs
@@ -283,6 +285,9 @@ async def list_properties(status: Optional[str] = None, user: dict = Depends(get
 async def portfolio_summary(user: dict = Depends(get_current_user)):
     owned = await db.properties.find(
         {"user_id": user["id"], "status": "owned"}, {"_id": 0}
+    ).to_list(500)
+    sold = await db.properties.find(
+        {"user_id": user["id"], "status": "sold"}, {"_id": 0}
     ).to_list(500)
 
     total_current_value = 0.0
@@ -298,7 +303,6 @@ async def portfolio_summary(user: dict = Depends(get_current_user)):
         current_value = p.get("current_value") or purchase_price
         loan_balance = p.get("current_loan_balance")
         if loan_balance is None:
-            # estimate as original loan minus rough amortization; fallback to original loan
             loan_balance = max((p.get("price", 0) - p.get("down_payment", 0)), 0)
         emi = _emi(max(p.get("price", 0) - p.get("down_payment", 0), 0),
                    p.get("loan_rate", 8.5), p.get("loan_tenure_years", 20))
@@ -321,6 +325,7 @@ async def portfolio_summary(user: dict = Depends(get_current_user)):
             "name": p["name"],
             "type": p["type"],
             "location": p.get("location", ""),
+            "status": "owned",
             "purchase_date": p.get("purchase_date"),
             "purchase_price": round(purchase_price, 2),
             "current_value": round(current_value, 2),
@@ -333,15 +338,42 @@ async def portfolio_summary(user: dict = Depends(get_current_user)):
             "rented": bool(p.get("rented")),
         })
 
+    # Sold properties — realized gains summary
+    total_realized_gains = 0.0
+    total_sold_proceeds = 0.0
+    sold_items = []
+    for p in sold:
+        purchase_price = p.get("purchase_price") or p.get("price") or 0
+        sold_price = p.get("sold_price") or purchase_price
+        gain = sold_price - purchase_price
+        gain_pct = (gain / purchase_price * 100) if purchase_price else 0
+        total_realized_gains += gain
+        total_sold_proceeds += sold_price
+        sold_items.append({
+            "id": p["id"],
+            "name": p["name"],
+            "type": p["type"],
+            "location": p.get("location", ""),
+            "status": "sold",
+            "purchase_date": p.get("purchase_date"),
+            "sold_date": p.get("sold_date"),
+            "purchase_price": round(purchase_price, 2),
+            "sold_price": round(sold_price, 2),
+            "gain": round(gain, 2),
+            "gain_pct": round(gain_pct, 2),
+        })
+
     total_equity = total_current_value - total_loan_balance
     total_appreciation_pct = (
         (total_current_value - total_purchase_cost) / total_purchase_cost * 100
         if total_purchase_cost else 0
     )
     net_monthly_cashflow = total_monthly_rent - total_monthly_emi - total_monthly_maintenance
+    total_net_worth = total_equity + total_realized_gains
 
     return {
         "count": len(owned),
+        "sold_count": len(sold),
         "total_current_value": round(total_current_value, 2),
         "total_purchase_cost": round(total_purchase_cost, 2),
         "total_equity": round(total_equity, 2),
@@ -352,8 +384,99 @@ async def portfolio_summary(user: dict = Depends(get_current_user)):
         "total_monthly_rent": round(total_monthly_rent, 2),
         "total_monthly_emi": round(total_monthly_emi, 2),
         "total_monthly_maintenance": round(total_monthly_maintenance, 2),
+        "total_realized_gains": round(total_realized_gains, 2),
+        "total_sold_proceeds": round(total_sold_proceeds, 2),
+        "total_net_worth": round(total_net_worth, 2),
         "items": items,
+        "sold_items": sold_items,
     }
+
+
+def _loan_balance_after_months(loan_amount: float, rate_pct: float, tenure_years: int, months_elapsed: int) -> float:
+    if loan_amount <= 0 or months_elapsed <= 0:
+        return max(loan_amount, 0)
+    emi = _emi(loan_amount, rate_pct, tenure_years)
+    r = (rate_pct / 100) / 12
+    balance = loan_amount
+    for _ in range(min(months_elapsed, tenure_years * 12)):
+        if balance <= 0:
+            break
+        interest = balance * r
+        principal = emi - interest
+        balance = max(balance - principal, 0)
+    return balance
+
+
+@api_router.get("/portfolio/timeline")
+async def portfolio_timeline(user: dict = Depends(get_current_user)):
+    props = await db.properties.find(
+        {"user_id": user["id"], "status": {"$in": ["owned", "sold"]}}, {"_id": 0}
+    ).to_list(500)
+
+    # Keep only those with a purchase_date we can use
+    dated = [p for p in props if p.get("purchase_date")]
+    if not dated:
+        return {"series": [], "earliest_year": None}
+
+    def _yr(s: Optional[str]) -> int:
+        try:
+            return int(s[:4])
+        except Exception:
+            return datetime.now(timezone.utc).year
+
+    current_year = datetime.now(timezone.utc).year
+    earliest_year = min(_yr(p["purchase_date"]) for p in dated)
+
+    series = []
+    for year in range(earliest_year, current_year + 1):
+        total_value = 0.0
+        total_loan = 0.0
+        cumulative_realized = 0.0
+
+        for p in dated:
+            pyear = _yr(p["purchase_date"])
+            if year < pyear:
+                continue
+            purchase_price = p.get("purchase_price") or p.get("price", 0) or 0
+            loan_amount = max((p.get("price", 0) or 0) - (p.get("down_payment", 0) or 0), 0)
+            rate = p.get("loan_rate", 8.5) or 8.5
+            tenure = p.get("loan_tenure_years", 20) or 20
+
+            if p.get("status") == "sold" and p.get("sold_date"):
+                syear = _yr(p["sold_date"])
+                sold_price = p.get("sold_price") or purchase_price
+                if year < syear:
+                    # still held that year — interpolate between purchase and sold
+                    span = max(syear - pyear, 1)
+                    ratio = (year - pyear) / span
+                    val = purchase_price + (sold_price - purchase_price) * ratio
+                    total_value += val
+                    months = (year - pyear) * 12
+                    total_loan += _loan_balance_after_months(loan_amount, rate, tenure, months)
+                else:
+                    cumulative_realized += (sold_price - purchase_price)
+                continue
+
+            # owned
+            current_value = p.get("current_value") or purchase_price
+            span = max(current_year - pyear, 1)
+            ratio = min((year - pyear) / span, 1.0)
+            val = purchase_price + (current_value - purchase_price) * ratio
+            total_value += val
+            months = (year - pyear) * 12
+            total_loan += _loan_balance_after_months(loan_amount, rate, tenure, months)
+
+        equity = total_value - total_loan
+        series.append({
+            "year": year,
+            "total_value": round(total_value, 2),
+            "loan_balance": round(total_loan, 2),
+            "equity": round(equity, 2),
+            "realized_gains": round(cumulative_realized, 2),
+            "net_worth": round(equity + cumulative_realized, 2),
+        })
+
+    return {"series": series, "earliest_year": earliest_year}
 
 
 @api_router.post("/properties", response_model=PropertyOut)
