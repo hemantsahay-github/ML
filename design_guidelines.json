@@ -1,0 +1,88 @@
+{
+  "theme": "dark",
+  "archetype": "5 (Jewel & Luxury) - Warm Editorial Dark",
+  "design_philosophy": "High-end real estate magazine meets elite financial planner. Trustworthy, sophisticated, analytical but human. Avoid typical neon/tech dark mode.",
+  "colors": {
+    "background": "#0A0908",
+    "foreground": "#F4F0EA",
+    "card": "#141311",
+    "card_foreground": "#F4F0EA",
+    "popover": "#141311",
+    "popover_foreground": "#F4F0EA",
+    "primary": "#C85A32",
+    "primary_foreground": "#FFFFFF",
+    "secondary": "#B89B72",
+    "secondary_foreground": "#0A0908",
+    "muted": "#1E1C1A",
+    "muted_foreground": "#A39C93",
+    "accent": "#1E1C1A",
+    "accent_foreground": "#F4F0EA",
+    "border": "#302C28",
+    "input": "#302C28",
+    "ring": "#C85A32",
+    "chart_rent": "#4A5568",
+    "chart_buy": "#C85A32",
+    "chart_mf": "#B89B72",
+    "chart_equity": "#5E7C60"
+  },
+  "typography": {
+    "fonts": [
+      {
+        "name": "Cormorant Garamond",
+        "type": "heading",
+        "import": "@fontsource/cormorant-garamond",
+        "usage": "H1, H2, big metric numbers"
+      },
+      {
+        "name": "Outfit",
+        "type": "body",
+        "import": "@fontsource/outfit",
+        "usage": "Dashboard UI, tables, labels, buttons"
+      }
+    ],
+    "rules": {
+      "h1": "text-4xl sm:text-5xl lg:text-6xl font-serif tracking-tight text-foreground",
+      "h2": "text-2xl sm:text-3xl lg:text-4xl font-serif tracking-tight text-foreground",
+      "body": "text-base font-sans text-muted_foreground",
+      "labels": "text-xs uppercase tracking-[0.2em] font-sans text-muted_foreground"
+    }
+  },
+  "spacing_and_layout": {
+    "strategy": "Generous spacing. Use p-6 or p-8 inside cards. Dashboard uses Bento Grid (Mode B) with gap-6.",
+    "radius": "0.25rem (rounded-sm) for a sharp, editorial feel.",
+    "alignment": "Optical alignment over geometrical. Left-align dense data."
+  },
+  "component_guidelines": {
+    "buttons": "Solid backgrounds. Primary uses #C85A32. Hover state must explicitly lighten the background and maintain text contrast.",
+    "cards": "Cardless or 1px border (#302C28) with flat #141311 background. NO drop shadows.",
+    "inputs": "Shadcn standard but customized to use #141311 background and #302C28 borders.",
+    "charts": "Recharts. Dark tooltips with 1px border. Accessible colors for lines.",
+    "ai_advisor": "Floating panel or sidebar with a subtle #B89B72 1px border to denote 'premium' feel."
+  },
+  "images": {
+    "hero_background": "https://images.unsplash.com/photo-1774415108809-87df103ee55f?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA1NTJ8MHwxfHNlYXJjaHwxfHxkYXJrJTIwbW9vZHklMjBtb2Rlcm4lMjBhcGFydG1lbnQlMjBpbnRlcmlvciUyMGV2ZW5pbmd8ZW58MHx8fHwxNzc2NTQyMTkyfDA&ixlib=rb-4.1.0&q=85",
+    "brand_logo": "https://images.pexels.com/photos/15342412/pexels-photo-15342412.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
+    "property_villa": "https://images.unsplash.com/photo-1564343128896-3ffbcf9439e5?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA2MjJ8MHwxfHNlYXJjaHwzfHxtb2Rlcm4lMjBsdXh1cnklMjB2aWxsYSUyMGV4dGVyaW9yJTIwdHdpbGlnaHR8ZW58MHx8fHwxNzc2NTQyMTgyfDA&ixlib=rb-4.1.0&q=85",
+    "property_apartment": "https://images.unsplash.com/photo-1757780993465-7f1923296763?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NTY2Nzh8MHwxfHNlYXJjaHwxfHxtb2Rlcm4lMjBhcGFydG1lbnQlMjBidWlsZGluZyUyMGV4dGVyaW9yJTIwdHdpbGlnaHR8ZW58MHx8fHwxNzc2NTQyMTgyfDA&ixlib=rb-4.1.0&q=85"
+  },
+  "tech_stack": {
+    "icons": "@phosphor-icons/react",
+    "charts": "recharts (via shadcn/ui)",
+    "motion": "framer-motion",
+    "toast": "sonner"
+  },
+  "testing": {
+    "data_testid": "ALL interactive elements must have data-testid attributes (e.g. data-testid='login-submit-button')"
+  },
+  "instructions_to_main_agent": [
+    "Install required fonts: yarn add @fontsource/cormorant-garamond @fontsource/outfit",
+    "Install icons: yarn add @phosphor-icons/react",
+    "Configure Tailwind with the exact color hexes provided above.",
+    "The landing page hero must use the provided hero_background image with a bg-black/50 overlay.",
+    "Build the dashboard with customized Shadcn components. Remove default Vercel look (soft shadows) and replace with 1px solid borders and flat backgrounds.",
+    "Implement Rent vs Buy, EMI Calculator, and Investment Comparison using Recharts.",
+    "Use INR (₹) for all currency values by default.",
+    "The AI Advisor should return structured recommendations visually differentiated from the main text.",
+    "CRITICAL: The frontend uses .js and .jsx files, NOT .tsx. Generate React components in .jsx/.js format."
+  ]
+}
