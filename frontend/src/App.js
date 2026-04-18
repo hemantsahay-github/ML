@@ -13,6 +13,9 @@ import Compare from "./pages/Compare";
 import Calculators from "./pages/Calculators";
 import Advisor from "./pages/Advisor";
 import Portfolio from "./pages/Portfolio";
+import Pricing from "./pages/Pricing";
+import Admin from "./pages/Admin";
+import Guide from "./pages/Guide";
 import SharedReport from "./pages/SharedReport";
 
 function App() {
@@ -35,6 +38,7 @@ function App() {
             <Route path="/" element={<Landing />} />
             <Route path="/login" element={<Login />} />
             <Route path="/register" element={<Register />} />
+            <Route path="/pricing" element={<Pricing />} />
             <Route path="/share/:id" element={<SharedReport />} />
             <Route
               path="/app"
@@ -50,6 +54,8 @@ function App() {
               <Route path="compare" element={<Compare />} />
               <Route path="calculators" element={<Calculators />} />
               <Route path="advisor" element={<Advisor />} />
+              <Route path="guide" element={<Guide />} />
+              <Route path="admin" element={<Admin />} />
             </Route>
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>

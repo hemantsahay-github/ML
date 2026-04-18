@@ -47,6 +47,9 @@ export default function Landing() {
             <a href="#how" className="text-sm text-muted-foreground hover:text-foreground transition">
               How it works
             </a>
+            <Link to="/pricing" className="text-sm text-muted-foreground hover:text-foreground transition" data-testid="nav-pricing-link">
+              Pricing
+            </Link>
             <Link
               to="/login"
               className="text-sm text-muted-foreground hover:text-foreground transition"

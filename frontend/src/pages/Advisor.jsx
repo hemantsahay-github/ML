@@ -47,8 +47,16 @@ export default function Advisor() {
       if (!sessionId) setSessionId(data.session_id);
       setMessages((m) => [...m, { role: "assistant", text: data.reply }]);
     } catch (e) {
-      toast.error(formatApiErrorDetail(e.response?.data?.detail));
-      setMessages((m) => [...m, { role: "assistant", text: "The advisor stumbled. Try again in a moment." }]);
+      if (e.response?.status === 402) {
+        toast.error("Pro plan required", {
+          description: "Upgrade to unlock the AI advisor.",
+          action: { label: "See plans", onClick: () => (window.location.href = "/pricing") },
+        });
+        setMessages((m) => [...m, { role: "assistant", text: "Pro plan required — head to Pricing to unlock the advisor. Your trial may have ended." }]);
+      } else {
+        toast.error(formatApiErrorDetail(e.response?.data?.detail));
+        setMessages((m) => [...m, { role: "assistant", text: "The advisor stumbled. Try again in a moment." }]);
+      }
     } finally {
       setLoading(false);
     }

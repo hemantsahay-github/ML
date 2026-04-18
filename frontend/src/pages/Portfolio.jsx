@@ -33,6 +33,7 @@ const COLORS = ["#C85A32", "#B89B72", "#5E7C60", "#4A5568", "#8B6F47", "#6B4423"
 export default function Portfolio() {
   const [summary, setSummary] = useState(null);
   const [timeline, setTimeline] = useState(null);
+  const [vsMarkets, setVsMarkets] = useState(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -44,6 +45,11 @@ export default function Portfolio() {
         ]);
         setSummary(sRes.data);
         setTimeline(tRes.data);
+        // vs investments only makes sense when there are dated owned properties
+        try {
+          const { data } = await api.post("/portfolio/vs-investments", {});
+          if (data.series && data.series.length > 0) setVsMarkets(data);
+        } catch {}
       } finally {
         setLoading(false);
       }
@@ -211,6 +217,60 @@ export default function Portfolio() {
                     ) : null}
                   </AreaChart>
                 </ResponsiveContainer>
+              </div>
+            </div>
+          )}
+
+          {/* vs Markets */}
+          {vsMarkets?.series?.length > 0 && (
+            <div className="card-flat p-6 mb-10" data-testid="portfolio-vs-markets">
+              <div className="flex items-end justify-between mb-5">
+                <div>
+                  <div className="eyebrow mb-1">Opportunity cost</div>
+                  <div className="font-serif text-2xl">Your property vs the markets</div>
+                </div>
+                <div className="text-xs text-muted-foreground max-w-sm text-right">
+                  Had you invested the same purchase capital, staggered on each buy date, at historical CAGRs.
+                </div>
+              </div>
+              <div style={{ width: "100%", height: 340 }}>
+                <ResponsiveContainer>
+                  <AreaChart data={vsMarkets.series}>
+                    <CartesianGrid stroke="hsl(var(--border))" strokeDasharray="2 4" />
+                    <XAxis dataKey="year" stroke="hsl(var(--muted-foreground))" />
+                    <YAxis stroke="hsl(var(--muted-foreground))" tickFormatter={(v) => inr(v)} />
+                    <Tooltip formatter={(v) => inrFull(v)} />
+                    <Legend />
+                    <Line type="monotone" dataKey="property" name="Property" stroke="#C85A32" strokeWidth={2.5} dot={false} />
+                    <Line type="monotone" dataKey="equity" name={`Equity ${vsMarkets.returns.equity}%`} stroke="#5E7C60" strokeWidth={1.8} dot={false} />
+                    <Line type="monotone" dataKey="mutual_funds" name={`MF ${vsMarkets.returns.mutual_funds}%`} stroke="#B89B72" strokeWidth={1.8} dot={false} />
+                    <Line type="monotone" dataKey="gold" name={`Gold ${vsMarkets.returns.gold}%`} strokeDasharray="4 4" stroke="#D4A15E" strokeWidth={1.8} dot={false} />
+                    <Line type="monotone" dataKey="silver" name={`Silver ${vsMarkets.returns.silver}%`} strokeDasharray="4 4" stroke="#A39C93" strokeWidth={1.8} dot={false} />
+                    <Line type="monotone" dataKey="fd" name={`FD ${vsMarkets.returns.fd}%`} strokeDasharray="2 6" stroke="#4A5568" strokeWidth={1.5} dot={false} />
+                  </AreaChart>
+                </ResponsiveContainer>
+              </div>
+              <div className="mt-5 border-t hairline pt-5">
+                <div className="eyebrow mb-3">
+                  Final verdict · winner:{" "}
+                  <span className={vsMarkets.summary.winner === "Property" ? "text-[hsl(var(--primary))]" : "text-[hsl(var(--secondary))]"}>
+                    {vsMarkets.summary.winner}
+                  </span>
+                </div>
+                <div className="grid md:grid-cols-3 gap-3 text-sm">
+                  <div className="flex justify-between p-3 border hairline">
+                    <span className="text-muted-foreground">Property today</span>
+                    <span className="num-metric">{inr(vsMarkets.summary.property_current)}</span>
+                  </div>
+                  {vsMarkets.summary.comparisons.map((c) => (
+                    <div key={c.asset} className="flex justify-between p-3 border hairline">
+                      <span className="text-muted-foreground capitalize">{c.asset.replace("_", " ")}</span>
+                      <span className={`num-metric ${c.delta_vs_property >= 0 ? "text-[hsl(var(--secondary))]" : "text-destructive"}`}>
+                        {inr(c.final)}
+                      </span>
+                    </div>
+                  ))}
+                </div>
               </div>
             </div>
           )}

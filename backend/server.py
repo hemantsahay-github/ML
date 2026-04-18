@@ -29,6 +29,9 @@ from reportlab.lib.units import mm
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
 import csv
 import io
+import hmac
+import hashlib
+import razorpay
 
 from city_presets import CITY_PRESETS
 
@@ -43,9 +46,18 @@ DB_NAME = os.environ["DB_NAME"]
 JWT_SECRET = os.environ["JWT_SECRET"]
 JWT_ALGORITHM = "HS256"
 EMERGENT_LLM_KEY = os.environ.get("EMERGENT_LLM_KEY", "")
+RAZORPAY_KEY_ID = os.environ.get("RAZORPAY_KEY_ID", "")
+RAZORPAY_KEY_SECRET = os.environ.get("RAZORPAY_KEY_SECRET", "")
+TRIAL_DAYS = int(os.environ.get("TRIAL_DAYS", "10"))
+PRO_MONTHLY_INR = int(os.environ.get("PRO_MONTHLY_INR", "999"))
+PRO_YEARLY_INR = int(os.environ.get("PRO_YEARLY_INR", "9999"))
 
 client = AsyncIOMotorClient(MONGO_URL)
 db = client[DB_NAME]
+
+razor_client = None
+if RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET:
+    razor_client = razorpay.Client(auth=(RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET))
 
 app = FastAPI(title="Estima — Property Decision Engine")
 api_router = APIRouter(prefix="/api")
@@ -133,6 +145,62 @@ class UserOut(BaseModel):
     email: EmailStr
     name: str
     role: str = "user"
+    plan: str = "free"                    # free | pro
+    plan_status: str = "none"             # none | trial | active | expired
+    trial_ends_at: Optional[str] = None
+    plan_expires_at: Optional[str] = None
+    is_pro: bool = False
+
+
+def _compute_plan_state(user: dict) -> dict:
+    """Returns computed plan fields based on timestamps."""
+    now = datetime.now(timezone.utc)
+    trial_ends = user.get("trial_ends_at")
+    plan_expires = user.get("plan_expires_at")
+    plan = user.get("plan", "free")
+    status = user.get("plan_status", "none")
+
+    def _parse(dt):
+        if not dt:
+            return None
+        try:
+            return datetime.fromisoformat(dt.replace("Z", "+00:00"))
+        except Exception:
+            return None
+
+    t_end = _parse(trial_ends)
+    p_end = _parse(plan_expires)
+
+    is_pro = False
+    if status == "active" and p_end and p_end > now:
+        is_pro = True
+    elif status == "trial" and t_end and t_end > now:
+        is_pro = True
+    elif status == "trial" and t_end and t_end <= now:
+        status = "expired"
+        plan = "free"
+    elif status == "active" and p_end and p_end <= now:
+        status = "expired"
+        plan = "free"
+
+    return {
+        "plan": plan,
+        "plan_status": status,
+        "trial_ends_at": trial_ends,
+        "plan_expires_at": plan_expires,
+        "is_pro": is_pro,
+    }
+
+
+def _user_out(user: dict) -> UserOut:
+    state = _compute_plan_state(user)
+    return UserOut(
+        id=user["id"],
+        email=user["email"],
+        name=user.get("name", ""),
+        role=user.get("role", "user"),
+        **state,
+    )
 
 
 # ------------------------------------------------------------
@@ -144,19 +212,26 @@ async def register(body: RegisterIn, response: Response):
     existing = await db.users.find_one({"email": email})
     if existing:
         raise HTTPException(status_code=400, detail="Email already registered")
+    now = datetime.now(timezone.utc)
+    trial_end = now + timedelta(days=TRIAL_DAYS)
     doc = {
         "email": email,
         "name": body.name.strip(),
         "password_hash": hash_password(body.password),
         "role": "user",
-        "created_at": datetime.now(timezone.utc).isoformat(),
+        "plan": "pro",
+        "plan_status": "trial",
+        "trial_ends_at": trial_end.isoformat(),
+        "plan_expires_at": None,
+        "created_at": now.isoformat(),
     }
     result = await db.users.insert_one(doc)
     uid = str(result.inserted_id)
     access = create_access_token(uid, email)
     refresh = create_refresh_token(uid)
     set_auth_cookies(response, access, refresh)
-    return UserOut(id=uid, email=email, name=doc["name"], role="user")
+    doc["id"] = uid
+    return _user_out(doc)
 
 
 @api_router.post("/auth/login", response_model=UserOut)
@@ -189,7 +264,8 @@ async def login(body: LoginIn, response: Response, request: Request):
     access = create_access_token(uid, email)
     refresh = create_refresh_token(uid)
     set_auth_cookies(response, access, refresh)
-    return UserOut(id=uid, email=email, name=user.get("name", ""), role=user.get("role", "user"))
+    user["id"] = uid
+    return _user_out(user)
 
 
 @api_router.post("/auth/logout")
@@ -201,7 +277,7 @@ async def logout(response: Response):
 
 @api_router.get("/auth/me", response_model=UserOut)
 async def me(user: dict = Depends(get_current_user)):
-    return UserOut(id=user["id"], email=user["email"], name=user.get("name", ""), role=user.get("role", "user"))
+    return _user_out(user)
 
 
 @api_router.post("/auth/refresh")
@@ -792,6 +868,7 @@ class AdvisorRequest(BaseModel):
 async def advisor_chat(body: AdvisorRequest, user: dict = Depends(get_current_user)):
     if not EMERGENT_LLM_KEY:
         raise HTTPException(500, "AI advisor is not configured")
+    _require_pro(user)
     session_id = body.session_id or f"{user['id']}-{uuid.uuid4()}"
     system = (
         "You are Estima, a sharp and empathetic property & personal finance advisor for Indian buyers. "
@@ -914,6 +991,7 @@ def _inr(n: float) -> str:
 
 @api_router.post("/compare/export/csv")
 async def export_csv(body: ExportRequest, user: dict = Depends(get_current_user)):
+    _require_pro(user)
     props = await db.properties.find(
         {"user_id": user["id"], "id": {"$in": body.property_ids}}, {"_id": 0}
     ).to_list(100)
@@ -942,6 +1020,7 @@ async def export_csv(body: ExportRequest, user: dict = Depends(get_current_user)
 
 @api_router.post("/compare/export/pdf")
 async def export_pdf(body: ExportRequest, user: dict = Depends(get_current_user)):
+    _require_pro(user)
     props = await db.properties.find(
         {"user_id": user["id"], "id": {"$in": body.property_ids}}, {"_id": 0}
     ).to_list(100)
@@ -1136,6 +1215,475 @@ async def delete_share(share_id: str, user: dict = Depends(get_current_user)):
     return {"ok": True}
 
 
+class CashflowPositiveRequest(BaseModel):
+    monthly_rent: float
+    loan_rate: float = 8.5
+    loan_tenure_years: int = 20
+    maintenance_monthly: float = 2000.0
+    property_tax_yearly: float = 0.0
+    down_payment_pct: float = 20.0     # % of price
+    target_cashflow_monthly: float = 0.0  # desired minimum monthly surplus
+
+
+@api_router.post("/calc/cashflow-positive")
+async def cashflow_positive(body: CashflowPositiveRequest):
+    """Find the maximum property price that yields a cashflow-positive rental on loan.
+
+    Math: EMI(loan) + maintenance + property_tax/12 <= monthly_rent - target_cashflow
+    loan = price * (1 - down_payment_pct/100)
+    Solve for max price via numerical bisection.
+    """
+    available_for_debt = body.monthly_rent - body.maintenance_monthly - body.property_tax_yearly / 12 - body.target_cashflow_monthly
+    if available_for_debt <= 0:
+        return {
+            "feasible": False,
+            "reason": "Rent doesn't cover maintenance + tax + desired cashflow even at zero EMI.",
+            "max_price": 0,
+            "max_loan": 0,
+            "down_payment": 0,
+            "emi": 0,
+            "monthly_cashflow": round(body.monthly_rent - body.maintenance_monthly - body.property_tax_yearly / 12, 2),
+            "breakdown": [],
+        }
+
+    # EMI formula inverse: loan = EMI * ((1+r)^n - 1) / (r*(1+r)^n)
+    r = (body.loan_rate / 100) / 12
+    n = body.loan_tenure_years * 12
+    if r == 0:
+        max_loan = available_for_debt * n
+    else:
+        max_loan = available_for_debt * ((1 + r) ** n - 1) / (r * (1 + r) ** n)
+    down_pct = max(body.down_payment_pct, 0) / 100
+    if down_pct >= 1.0:
+        max_price = max_loan
+    else:
+        max_price = max_loan / max(1 - down_pct, 0.01)
+    down_payment = max_price - max_loan
+    emi = _emi(max_loan, body.loan_rate, body.loan_tenure_years)
+    cashflow = body.monthly_rent - emi - body.maintenance_monthly - body.property_tax_yearly / 12
+
+    # Scenario table: several price points
+    breakdown = []
+    for pct in [1.0, 0.9, 0.8, 0.7, 0.6, 0.5]:
+        price = max_price * pct
+        loan = price * (1 - down_pct)
+        e = _emi(loan, body.loan_rate, body.loan_tenure_years)
+        cf = body.monthly_rent - e - body.maintenance_monthly - body.property_tax_yearly / 12
+        yield_pct = (body.monthly_rent * 12 / price * 100) if price else 0
+        breakdown.append({
+            "price": round(price, 2),
+            "loan": round(loan, 2),
+            "down_payment": round(price - loan, 2),
+            "emi": round(e, 2),
+            "cashflow": round(cf, 2),
+            "gross_yield_pct": round(yield_pct, 2),
+        })
+
+    return {
+        "feasible": True,
+        "max_price": round(max_price, 2),
+        "max_loan": round(max_loan, 2),
+        "down_payment": round(down_payment, 2),
+        "emi": round(emi, 2),
+        "monthly_cashflow": round(cashflow, 2),
+        "gross_yield_pct": round((body.monthly_rent * 12 / max_price * 100), 2) if max_price else 0,
+        "breakdown": breakdown,
+    }
+
+
+# ------------------------------------------------------------
+# Billing / Razorpay
+# ------------------------------------------------------------
+PLANS = {
+    "monthly": {"id": "monthly", "label": "Pro · Monthly", "amount_inr": PRO_MONTHLY_INR, "days": 30},
+    "yearly": {"id": "yearly", "label": "Pro · Yearly", "amount_inr": PRO_YEARLY_INR, "days": 365, "savings": "save 17%"},
+}
+
+
+def _require_admin(user: dict):
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin only")
+
+
+def _require_pro(user: dict):
+    state = _compute_plan_state(user)
+    if not state["is_pro"]:
+        raise HTTPException(status_code=402, detail="Pro plan required")
+
+
+@api_router.get("/billing/plans")
+async def billing_plans():
+    return {
+        "currency": "INR",
+        "trial_days": TRIAL_DAYS,
+        "razorpay_key_id": RAZORPAY_KEY_ID,
+        "plans": [
+            {
+                "id": "free",
+                "label": "Free",
+                "amount_inr": 0,
+                "features": [
+                    "Up to 3 properties",
+                    "EMI + Rent vs Buy calculators",
+                    "Basic side-by-side compare",
+                ],
+            },
+            {
+                "id": "monthly",
+                "label": "Pro · Monthly",
+                "amount_inr": PRO_MONTHLY_INR,
+                "features": [
+                    "Unlimited properties & saved scenarios",
+                    "AI Advisor (Claude Sonnet 4.5)",
+                    "Portfolio timeline & Sold ledger",
+                    "CSV / PDF exports & Share links",
+                    "City presets, investments comparison, cashflow finder",
+                ],
+            },
+            {
+                "id": "yearly",
+                "label": "Pro · Yearly",
+                "amount_inr": PRO_YEARLY_INR,
+                "savings": "Save ~17% (2 months free)",
+                "features": [
+                    "Everything in Monthly",
+                    "17% savings vs monthly",
+                    "Priority support",
+                ],
+            },
+        ],
+    }
+
+
+@api_router.get("/billing/me")
+async def billing_me(user: dict = Depends(get_current_user)):
+    state = _compute_plan_state(user)
+    # persist any state change (trial → expired etc.)
+    await db.users.update_one(
+        {"_id": ObjectId(user["id"])},
+        {"$set": {"plan": state["plan"], "plan_status": state["plan_status"]}},
+    )
+    txns = await db.transactions.find({"user_id": user["id"]}, {"_id": 0}).sort("created_at", -1).to_list(50)
+    return {**state, "transactions": txns}
+
+
+class CreateOrderIn(BaseModel):
+    plan_id: str  # "monthly" | "yearly"
+
+
+@api_router.post("/billing/create-order")
+async def create_order(body: CreateOrderIn, user: dict = Depends(get_current_user)):
+    if not razor_client:
+        raise HTTPException(500, "Razorpay not configured")
+    plan = PLANS.get(body.plan_id)
+    if not plan:
+        raise HTTPException(400, "Invalid plan")
+    amount_paise = plan["amount_inr"] * 100
+    receipt = f"estima_{user['id'][:10]}_{int(datetime.now(timezone.utc).timestamp())}"[:40]
+    try:
+        order = razor_client.order.create({
+            "amount": amount_paise,
+            "currency": "INR",
+            "receipt": receipt,
+            "payment_capture": 1,
+            "notes": {"plan_id": body.plan_id, "user_id": user["id"], "email": user["email"]},
+        })
+    except Exception as e:
+        logger.exception("razorpay order failed")
+        raise HTTPException(502, f"Could not create order: {str(e)[:200]}")
+    await db.transactions.insert_one({
+        "user_id": user["id"],
+        "email": user["email"],
+        "plan_id": body.plan_id,
+        "amount_inr": plan["amount_inr"],
+        "order_id": order["id"],
+        "status": "created",
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    })
+    return {
+        "order_id": order["id"],
+        "amount": amount_paise,
+        "currency": "INR",
+        "key_id": RAZORPAY_KEY_ID,
+        "plan_label": plan["label"],
+        "customer": {"name": user.get("name", ""), "email": user["email"]},
+    }
+
+
+class VerifyPaymentIn(BaseModel):
+    razorpay_order_id: str
+    razorpay_payment_id: str
+    razorpay_signature: str
+
+
+@api_router.post("/billing/verify-payment")
+async def verify_payment(body: VerifyPaymentIn, user: dict = Depends(get_current_user)):
+    if not razor_client:
+        raise HTTPException(500, "Razorpay not configured")
+    expected = hmac.new(
+        RAZORPAY_KEY_SECRET.encode("utf-8"),
+        f"{body.razorpay_order_id}|{body.razorpay_payment_id}".encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+    if not hmac.compare_digest(expected, body.razorpay_signature):
+        await db.transactions.update_one(
+            {"order_id": body.razorpay_order_id, "user_id": user["id"]},
+            {"$set": {"status": "failed", "payment_id": body.razorpay_payment_id}},
+        )
+        raise HTTPException(400, "Invalid payment signature")
+
+    txn = await db.transactions.find_one({"order_id": body.razorpay_order_id, "user_id": user["id"]}, {"_id": 0})
+    if not txn:
+        raise HTTPException(404, "Transaction not found")
+
+    plan = PLANS.get(txn["plan_id"])
+    if not plan:
+        raise HTTPException(400, "Invalid plan on transaction")
+
+    # Extend from existing expiry if still active, else from now
+    now = datetime.now(timezone.utc)
+    current = await db.users.find_one({"_id": ObjectId(user["id"])})
+    state = _compute_plan_state(current) if current else {"plan_expires_at": None, "is_pro": False}
+    base = now
+    if state.get("is_pro") and state.get("plan_expires_at"):
+        try:
+            existing = datetime.fromisoformat(state["plan_expires_at"].replace("Z", "+00:00"))
+            if existing > now:
+                base = existing
+        except Exception:
+            pass
+    new_expires = base + timedelta(days=plan["days"])
+
+    await db.users.update_one(
+        {"_id": ObjectId(user["id"])},
+        {"$set": {
+            "plan": "pro",
+            "plan_status": "active",
+            "plan_expires_at": new_expires.isoformat(),
+        }},
+    )
+    await db.transactions.update_one(
+        {"order_id": body.razorpay_order_id, "user_id": user["id"]},
+        {"$set": {
+            "status": "success",
+            "payment_id": body.razorpay_payment_id,
+            "signature": body.razorpay_signature,
+            "verified_at": now.isoformat(),
+        }},
+    )
+    refreshed = await db.users.find_one({"_id": ObjectId(user["id"])})
+    refreshed["id"] = user["id"]
+    return {
+        "ok": True,
+        "plan_expires_at": new_expires.isoformat(),
+        "user": _user_out(refreshed).model_dump(),
+    }
+
+
+@api_router.post("/billing/cancel")
+async def cancel_plan(user: dict = Depends(get_current_user)):
+    # "cancel" downgrades immediately to free (simple approach)
+    await db.users.update_one(
+        {"_id": ObjectId(user["id"])},
+        {"$set": {"plan": "free", "plan_status": "expired", "plan_expires_at": None}},
+    )
+    return {"ok": True}
+
+
+# ------------------------------------------------------------
+# Admin
+# ------------------------------------------------------------
+@api_router.get("/admin/stats")
+async def admin_stats(user: dict = Depends(get_current_user)):
+    _require_admin(user)
+    total_users = await db.users.count_documents({})
+    pro_users = await db.users.count_documents({"plan": "pro", "plan_status": {"$in": ["active", "trial"]}})
+    trial_users = await db.users.count_documents({"plan_status": "trial"})
+
+    total_revenue = 0
+    txn_count = 0
+    async for t in db.transactions.find({"status": "success"}):
+        total_revenue += t.get("amount_inr", 0)
+        txn_count += 1
+
+    total_properties = await db.properties.count_documents({})
+    owned_props = await db.properties.count_documents({"status": "owned"})
+    sold_props = await db.properties.count_documents({"status": "sold"})
+
+    return {
+        "users": {"total": total_users, "pro": pro_users, "trial": trial_users, "free": max(total_users - pro_users, 0)},
+        "revenue": {"total_inr": total_revenue, "successful_transactions": txn_count},
+        "properties": {"total": total_properties, "owned": owned_props, "sold": sold_props},
+    }
+
+
+@api_router.get("/admin/users")
+async def admin_users(user: dict = Depends(get_current_user)):
+    _require_admin(user)
+    out = []
+    async for u in db.users.find({}).sort("created_at", -1):
+        uid = str(u["_id"])
+        u["id"] = uid
+        state = _compute_plan_state(u)
+        out.append({
+            "id": uid,
+            "email": u["email"],
+            "name": u.get("name", ""),
+            "role": u.get("role", "user"),
+            "plan": state["plan"],
+            "plan_status": state["plan_status"],
+            "trial_ends_at": state["trial_ends_at"],
+            "plan_expires_at": state["plan_expires_at"],
+            "is_pro": state["is_pro"],
+            "created_at": u.get("created_at"),
+        })
+    return out
+
+
+@api_router.get("/admin/transactions")
+async def admin_transactions(user: dict = Depends(get_current_user)):
+    _require_admin(user)
+    out = await db.transactions.find({}, {"_id": 0}).sort("created_at", -1).to_list(500)
+    return out
+
+
+class AdminActionIn(BaseModel):
+    action: str  # "promote" | "demote" | "grant_pro" | "cancel_pro"
+    days: int = 30
+
+
+@api_router.post("/admin/users/{user_id}/action")
+async def admin_user_action(user_id: str, body: AdminActionIn, user: dict = Depends(get_current_user)):
+    _require_admin(user)
+    try:
+        target = await db.users.find_one({"_id": ObjectId(user_id)})
+    except Exception:
+        raise HTTPException(400, "Invalid user id")
+    if not target:
+        raise HTTPException(404, "User not found")
+
+    update = {}
+    if body.action == "promote":
+        update["role"] = "admin"
+    elif body.action == "demote":
+        if target["_id"] == ObjectId(user["id"]):
+            raise HTTPException(400, "Cannot demote yourself")
+        update["role"] = "user"
+    elif body.action == "grant_pro":
+        now = datetime.now(timezone.utc)
+        update["plan"] = "pro"
+        update["plan_status"] = "active"
+        update["plan_expires_at"] = (now + timedelta(days=body.days)).isoformat()
+    elif body.action == "cancel_pro":
+        update["plan"] = "free"
+        update["plan_status"] = "expired"
+        update["plan_expires_at"] = None
+    else:
+        raise HTTPException(400, "Unknown action")
+
+    await db.users.update_one({"_id": ObjectId(user_id)}, {"$set": update})
+    return {"ok": True}
+
+
+# ------------------------------------------------------------
+# Portfolio vs Markets (Investments)
+# ------------------------------------------------------------
+DEFAULT_MARKET_RETURNS = {
+    "equity": 13.0,        # Nifty 50 long-term CAGR
+    "mutual_funds": 11.0,  # diversified MF CAGR
+    "gold": 9.0,           # historical INR gold
+    "silver": 8.5,
+    "fd": 7.0,             # bank fixed deposit
+}
+
+
+class VsInvestmentsRequest(BaseModel):
+    returns: Optional[dict] = None  # override DEFAULT_MARKET_RETURNS; keys -> % CAGR
+    owned_ids: Optional[List[str]] = None  # subset
+
+
+@api_router.post("/portfolio/vs-investments")
+async def portfolio_vs_investments(body: VsInvestmentsRequest, user: dict = Depends(get_current_user)):
+    q = {"user_id": user["id"], "status": "owned"}
+    if body.owned_ids:
+        q["id"] = {"$in": body.owned_ids}
+    props = await db.properties.find(q, {"_id": 0}).to_list(500)
+    # only dated
+    props = [p for p in props if p.get("purchase_date") and (p.get("purchase_price") or p.get("price"))]
+    if not props:
+        return {"series": [], "earliest_year": None, "summary": {}}
+
+    def _yr(s):
+        try:
+            return int(s[:4])
+        except Exception:
+            return datetime.now(timezone.utc).year
+
+    current_year = datetime.now(timezone.utc).year
+    earliest_year = min(_yr(p["purchase_date"]) for p in props)
+
+    returns = {**DEFAULT_MARKET_RETURNS, **(body.returns or {})}
+
+    # for each property, we have purchase_price at purchase_year and current_value at current_year
+    # for each year between, interpolate linearly for property value
+    # for each alternative: cumulative invested (purchase prices staggered by their purchase year) grown at CAGR
+    series = []
+    for year in range(earliest_year, current_year + 1):
+        prop_value = 0.0
+        alt_values = {k: 0.0 for k in returns.keys()}
+
+        for p in props:
+            pyear = _yr(p["purchase_date"])
+            if year < pyear:
+                continue
+            purchase_price = p.get("purchase_price") or p.get("price") or 0
+            current_value = p.get("current_value") or purchase_price
+            span = max(current_year - pyear, 1)
+            ratio = min((year - pyear) / span, 1.0)
+            pv = purchase_price + (current_value - purchase_price) * ratio
+            prop_value += pv
+
+            years_elapsed = year - pyear
+            for k, rate in returns.items():
+                alt_values[k] += purchase_price * ((1 + rate / 100) ** years_elapsed)
+
+        row = {"year": year, "property": round(prop_value, 2)}
+        for k, v in alt_values.items():
+            row[k] = round(v, 2)
+        series.append(row)
+
+    # summary
+    last = series[-1] if series else {}
+    total_invested = sum((p.get("purchase_price") or p.get("price") or 0) for p in props)
+    summary = {
+        "total_invested": round(total_invested, 2),
+        "property_current": last.get("property", 0),
+        "property_gain_pct": round((last.get("property", 0) - total_invested) / total_invested * 100, 2) if total_invested else 0,
+        "comparisons": [],
+    }
+    for k in returns.keys():
+        final = last.get(k, 0)
+        summary["comparisons"].append({
+            "asset": k,
+            "final": final,
+            "gain_pct": round((final - total_invested) / total_invested * 100, 2) if total_invested else 0,
+            "delta_vs_property": round(final - last.get("property", 0), 2),
+            "rate": returns[k],
+        })
+    summary["comparisons"].sort(key=lambda x: x["final"], reverse=True)
+    winners = sorted([("Property", last.get("property", 0))] + [(c["asset"], c["final"]) for c in summary["comparisons"]],
+                     key=lambda x: x[1], reverse=True)
+    summary["winner"] = winners[0][0] if winners else None
+    summary["winner_value"] = winners[0][1] if winners else 0
+
+    return {
+        "earliest_year": earliest_year,
+        "series": series,
+        "returns": returns,
+        "summary": summary,
+    }
+
+
 # ------------------------------------------------------------
 # Root
 # ------------------------------------------------------------
@@ -1190,17 +1738,33 @@ async def on_startup():
     admin_email = os.environ.get("ADMIN_EMAIL", "admin@estima.com").lower()
     admin_pass = os.environ.get("ADMIN_PASSWORD", "Admin@123")
     existing = await db.users.find_one({"email": admin_email})
+    # Admin always gets Pro status (active for 100 years)
+    forever = (datetime.now(timezone.utc) + timedelta(days=36500)).isoformat()
     if not existing:
         await db.users.insert_one({
             "email": admin_email,
             "name": "Admin",
             "password_hash": hash_password(admin_pass),
             "role": "admin",
+            "plan": "pro",
+            "plan_status": "active",
+            "plan_expires_at": forever,
+            "trial_ends_at": None,
             "created_at": datetime.now(timezone.utc).isoformat(),
         })
         logger.info(f"Seeded admin {admin_email}")
-    elif not verify_password(admin_pass, existing["password_hash"]):
-        await db.users.update_one({"email": admin_email}, {"$set": {"password_hash": hash_password(admin_pass)}})
+    else:
+        updates = {}
+        if not verify_password(admin_pass, existing["password_hash"]):
+            updates["password_hash"] = hash_password(admin_pass)
+        if existing.get("role") != "admin":
+            updates["role"] = "admin"
+        if existing.get("plan") != "pro" or existing.get("plan_status") != "active":
+            updates["plan"] = "pro"
+            updates["plan_status"] = "active"
+            updates["plan_expires_at"] = forever
+        if updates:
+            await db.users.update_one({"email": admin_email}, {"$set": updates})
 
 
 @app.on_event("shutdown")

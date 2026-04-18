@@ -75,7 +75,14 @@ export default function Compare() {
       downloadBlob(res.data, "estima-comparison.csv");
       toast.success("CSV downloaded");
     } catch (e) {
-      toast.error("Export failed");
+      if (e.response?.status === 402) {
+        toast.error("Pro plan required", {
+          description: "Upgrade to export CSV/PDF.",
+          action: { label: "See plans", onClick: () => (window.location.href = "/pricing") },
+        });
+      } else {
+        toast.error("Export failed");
+      }
     }
   };
 
@@ -89,7 +96,14 @@ export default function Compare() {
       downloadBlob(res.data, "estima-comparison.pdf");
       toast.success("PDF downloaded");
     } catch (e) {
-      toast.error("Export failed");
+      if (e.response?.status === 402) {
+        toast.error("Pro plan required", {
+          description: "Upgrade to export CSV/PDF.",
+          action: { label: "See plans", onClick: () => (window.location.href = "/pricing") },
+        });
+      } else {
+        toast.error("Export failed");
+      }
     }
   };
 

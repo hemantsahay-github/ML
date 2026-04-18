@@ -19,6 +19,7 @@ const tabs = [
   { id: "emi", label: "EMI" },
   { id: "rentbuy", label: "Rent vs Buy" },
   { id: "invest", label: "Property vs MF vs Equity" },
+  { id: "cashflow", label: "Cashflow-positive finder" },
 ];
 
 export default function Calculators() {
@@ -29,8 +30,8 @@ export default function Calculators() {
         <div className="eyebrow mb-2">Calculators</div>
         <h1 className="font-serif text-5xl">The brutal math.</h1>
         <p className="text-muted-foreground mt-3 max-w-xl">
-          EMI schedules, rent-vs-buy breakevens, and real estate vs mutual funds vs equity —
-          with every assumption editable.
+          EMI schedules, rent-vs-buy breakevens, property vs markets, and the maximum
+          property price at which rent still beats EMI.
         </p>
       </div>
 
@@ -54,6 +55,107 @@ export default function Calculators() {
       {tab === "emi" && <EmiCalc />}
       {tab === "rentbuy" && <RentBuyCalc />}
       {tab === "invest" && <InvestCalc />}
+      {tab === "cashflow" && <CashflowPositiveCalc />}
+    </div>
+  );
+}
+
+function CashflowPositiveCalc() {
+  const [form, setForm] = useState({
+    monthly_rent: 45000,
+    loan_rate: 8.5,
+    loan_tenure_years: 20,
+    maintenance_monthly: 3500,
+    property_tax_yearly: 15000,
+    down_payment_pct: 20,
+    target_cashflow_monthly: 0,
+  });
+  const [res, setRes] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const run = async () => {
+    setLoading(true);
+    try {
+      const { data } = await api.post("/calc/cashflow-positive", form);
+      setRes(data);
+    } catch (e) {
+      toast.error(formatApiErrorDetail(e.response?.data?.detail));
+    } finally {
+      setLoading(false);
+    }
+  };
+  return (
+    <div className="grid lg:grid-cols-[380px_1fr] gap-8">
+      <div className="card-flat p-6 space-y-2">
+        <NumberField label="Expected monthly rent (₹)" value={form.monthly_rent} onChange={(v) => setForm({ ...form, monthly_rent: v })} />
+        <div className="grid grid-cols-2 gap-3">
+          <NumberField label="Loan %" value={form.loan_rate} step="0.1" onChange={(v) => setForm({ ...form, loan_rate: v })} />
+          <NumberField label="Tenure" value={form.loan_tenure_years} onChange={(v) => setForm({ ...form, loan_tenure_years: v })} />
+        </div>
+        <NumberField label="Maint / month (₹)" value={form.maintenance_monthly} onChange={(v) => setForm({ ...form, maintenance_monthly: v })} />
+        <NumberField label="Property tax / year (₹)" value={form.property_tax_yearly} onChange={(v) => setForm({ ...form, property_tax_yearly: v })} />
+        <NumberField label="Down payment %" value={form.down_payment_pct} step="0.5" onChange={(v) => setForm({ ...form, down_payment_pct: v })} />
+        <NumberField label="Target cashflow ₹/mo" value={form.target_cashflow_monthly} onChange={(v) => setForm({ ...form, target_cashflow_monthly: v })} />
+        <button onClick={run} disabled={loading} className="btn-primary w-full py-2.5 text-sm mt-3" data-testid="cashflow-run-button">
+          {loading ? "Crunching…" : "Find the max price"}
+        </button>
+      </div>
+      <div>
+        {!res ? (
+          <div className="card-flat p-8 text-muted-foreground">
+            A cashflow-positive rental is one where the <span className="text-foreground">rent exceeds EMI + maintenance + taxes</span>. Tell Estima the rent you can realistically charge and the max affordable ticket size — at the loan terms — is computed instantly.
+          </div>
+        ) : !res.feasible ? (
+          <div className="card-flat p-8 border-destructive" data-testid="cashflow-infeasible">
+            <div className="font-serif text-3xl mb-3 text-destructive">Not feasible.</div>
+            <p className="text-muted-foreground">{res.reason}</p>
+          </div>
+        ) : (
+          <div className="space-y-6" data-testid="cashflow-result">
+            <div className="card-flat p-8 border-[hsl(var(--secondary))]">
+              <div className="eyebrow text-[hsl(var(--secondary))] mb-2">Maximum cashflow-positive price</div>
+              <div className="num-metric text-5xl mb-3">{inrFull(res.max_price)}</div>
+              <div className="text-sm text-muted-foreground">
+                At this price the rent of{" "}
+                <span className="text-foreground">{inrFull(form.monthly_rent)}</span> exactly covers EMI + costs.
+                Below this, every rupee is surplus.
+              </div>
+            </div>
+            <div className="grid md:grid-cols-4 gap-4">
+              <Metric label="Loan amount" value={inr(res.max_loan)} />
+              <Metric label="Down payment" value={inr(res.down_payment)} />
+              <Metric label="Monthly EMI" value={inrFull(res.emi)} />
+              <Metric label="Gross yield" value={`${res.gross_yield_pct}%`} />
+            </div>
+            <div className="card-flat overflow-x-auto">
+              <div className="p-4 eyebrow border-b hairline">If you pay less…</div>
+              <table className="w-full text-sm">
+                <thead className="text-left text-muted-foreground border-b hairline">
+                  <tr>
+                    {["Price", "Loan", "Down", "EMI", "Cashflow / month", "Gross yield"].map((h) => (
+                      <th key={h} className="p-4 font-normal eyebrow">{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {res.breakdown.map((r, i) => (
+                    <tr key={i} className="border-b hairline last:border-0" data-testid={`cashflow-row-${i}`}>
+                      <td className="p-4">{inr(r.price)}</td>
+                      <td className="p-4">{inr(r.loan)}</td>
+                      <td className="p-4">{inr(r.down_payment)}</td>
+                      <td className="p-4">{inr(r.emi)}</td>
+                      <td className={`p-4 num-metric ${r.cashflow >= 0 ? "text-[hsl(var(--secondary))]" : "text-destructive"}`}>
+                        {r.cashflow >= 0 ? "+" : ""}
+                        {inr(r.cashflow)}
+                      </td>
+                      <td className="p-4">{r.gross_yield_pct}%</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+      </div>
     </div>
   );
 }
