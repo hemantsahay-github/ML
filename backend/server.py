@@ -4351,6 +4351,14 @@ async def public_will_review(token: str):
     r = await db.will_reviews.find_one({"token": token}, {"_id": 0})
     if not r:
         raise HTTPException(404, "Invalid or expired review link")
+    if r.get("expires_at"):
+        try:
+            if datetime.fromisoformat(r["expires_at"]) < datetime.now(timezone.utc):
+                raise HTTPException(410, "Review link has expired")
+        except HTTPException:
+            raise
+        except Exception:
+            pass
     will = await db.wills.find_one({"user_id": r["will_user_id"]}, {"_id": 0})
     if not will:
         raise HTTPException(404, "Will not found")
@@ -4382,6 +4390,14 @@ async def submit_lawyer_review(token: str, body: LawyerReviewSubmit):
     r = await db.will_reviews.find_one({"token": token})
     if not r:
         raise HTTPException(404, "Invalid token")
+    if r.get("expires_at"):
+        try:
+            if datetime.fromisoformat(r["expires_at"]) < datetime.now(timezone.utc):
+                raise HTTPException(410, "Review link has expired")
+        except HTTPException:
+            raise
+        except Exception:
+            pass
     now = datetime.now(timezone.utc)
     await db.will_reviews.update_one(
         {"token": token},
@@ -4476,6 +4492,14 @@ async def public_witness_sign(token: str):
     w = await db.witness_signs.find_one({"token": token}, {"_id": 0})
     if not w:
         raise HTTPException(404, "Invalid witness link")
+    if w.get("expires_at"):
+        try:
+            if datetime.fromisoformat(w["expires_at"]) < datetime.now(timezone.utc):
+                raise HTTPException(410, "Witness link has expired")
+        except HTTPException:
+            raise
+        except Exception:
+            pass
     will = await db.wills.find_one({"user_id": w["will_user_id"]}, {"_id": 0})
     if not will:
         raise HTTPException(404, "Will not found")
@@ -4495,6 +4519,14 @@ async def public_witness_submit(token: str, body: WitnessSignRequest):
     w = await db.witness_signs.find_one({"token": token})
     if not w:
         raise HTTPException(404, "Invalid token")
+    if w.get("expires_at"):
+        try:
+            if datetime.fromisoformat(w["expires_at"]) < datetime.now(timezone.utc):
+                raise HTTPException(410, "Witness link has expired")
+        except HTTPException:
+            raise
+        except Exception:
+            pass
     if len(body.aadhaar_last_4) != 4 or not body.aadhaar_last_4.isdigit():
         raise HTTPException(400, "Aadhaar last-4 must be 4 digits")
     if len(body.otp) != 6 or not body.otp.isdigit():

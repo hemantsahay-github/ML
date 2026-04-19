@@ -53,8 +53,8 @@ export default function WitnessSign() {
     }
   };
 
-  if (loading) return <div className="min-h-screen flex items-center justify-center text-muted-foreground">Loading…</div>;
-  if (!data) return <div className="min-h-screen flex items-center justify-center text-muted-foreground">Invalid link.</div>;
+  if (loading) return <div className="min-h-screen flex items-center justify-center text-muted-foreground" data-testid="witness-sign-loading">Loading…</div>;
+  if (!data) return <div className="min-h-screen flex items-center justify-center text-muted-foreground" data-testid="witness-sign-invalid">Invalid or expired link.</div>;
 
   if (signed) {
     return (

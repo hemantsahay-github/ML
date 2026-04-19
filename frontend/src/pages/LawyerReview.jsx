@@ -38,8 +38,8 @@ export default function LawyerReview() {
     }
   };
 
-  if (loading) return <div className="min-h-screen flex items-center justify-center text-muted-foreground">Loading Will…</div>;
-  if (!data) return <div className="min-h-screen flex items-center justify-center text-muted-foreground">Invalid or expired review link.</div>;
+  if (loading) return <div className="min-h-screen flex items-center justify-center text-muted-foreground" data-testid="lawyer-review-loading">Loading Will…</div>;
+  if (!data) return <div className="min-h-screen flex items-center justify-center text-muted-foreground" data-testid="lawyer-review-invalid">Invalid or expired review link.</div>;
   const { review, will } = data;
 
   if (done) {

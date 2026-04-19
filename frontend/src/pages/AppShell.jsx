@@ -35,11 +35,13 @@ export default function AppShell() {
   const [showTour, setShowTour] = useState(false);
 
   useEffect(() => {
-    if (user && !hasSeenTour()) {
+    // Only auto-open the onboarding tour on the dashboard landing route so it
+    // doesn't intercept clicks on sub-pages like /app/tenants or /app/will.
+    if (user && !hasSeenTour() && location.pathname === "/app") {
       const t = setTimeout(() => setShowTour(true), 500);
       return () => clearTimeout(t);
     }
-  }, [user]);
+  }, [user, location.pathname]);
 
   const doLogout = async () => {
     await logout();

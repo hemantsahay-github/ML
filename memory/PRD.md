@@ -206,3 +206,41 @@ Personal property buying options and decision making and managing — comparing 
 - UserOut now includes `is_demo` flag.
 
 **Tests:** iteration_11.json — 10/10 backend, 100% frontend. All new endpoints + flows green.
+
+## 2026-04-19 — Nearby market data · Aadhaar stub · Lawyer review · Witness e-sign · Beneficiary notifications
+**Nearby market data:**
+- GET /api/market/nearby?city=&area=&type=&bhk= — aggregates community contributions + curated city_rents presets. Returns mean/median rent + rent-per-sqft.
+- POST /api/market/contribute — user-submitted data point (city/area/type/rent/sqft).
+- `NearbyMarketCard` component renders on owned-property cards in Properties page.
+
+**Aadhaar verification (STUB):**
+- POST /api/verify/aadhaar/initiate (body: {subject_type, subject_id, aadhaar_last_4, phone, name}) → returns `{txn_id}` + logs stub OTP.
+- POST /api/verify/aadhaar/confirm (body: {txn_id, otp}) → accepts any 6-digit OTP; sets `aadhaar_verified=true` + `aadhaar_last_4` on the linked tenant / witness.
+- Tenants page `AadhaarModal` runs the initiate → OTP → confirm flow; card shows "Aadhaar verified ****XXXX" badge.
+
+**Lawyer review flow:**
+- POST /api/will/send-for-lawyer-review — creates review invitation, 30-day expiry token. Public pages at `/lawyer-review/:token` (→ GET /api/public/will-review/{token}) and submit via POST /api/public/will-review/{token}/submit (status: reviewed | rejected).
+- Will doc reflects `lawyer_review_status`, `lawyer_review_comments`, `lawyer_reviewed_at`.
+- Testator notified via Resend mock on lawyer action.
+
+**Witness e-sign flow:**
+- POST /api/will/invite-witness — witness_index (0/1), name, email → 30-day token.
+- Public `/witness-sign/:token` page runs Aadhaar-stub OTP (any 6 digits) → POST /api/public/witness-sign/{token}. Sets `witness_1_signature` / `witness_2_signature` on the Will.
+
+**Beneficiary notifications (MOCKED):**
+- POST /api/will/notify-beneficiaries — uses notifications.py (Resend + Twilio MOCK — logs to stdout). Generates+password-protects PDF per beneficiary (not yet attached; production task).
+
+**Iteration 12 follow-ups (applied):**
+- Tour auto-open now scoped to `/app` dashboard only — no longer intercepts clicks on `/app/tenants`, `/app/will`, etc.
+- Added `data-testid` to loading/invalid states on LawyerReview + WitnessSign pages.
+- `expires_at` now enforced (410 response) on public lawyer-review and witness-sign GET + POST endpoints.
+
+**Tests:** iteration_12.json — 12/12 backend, 100% frontend on all new flows. Two minor contract-doc mismatches noted (non-blocking).
+
+## Backlog / Next (P2)
+- Split `server.py` (~4800 lines) into domain routers (market.py, verify.py, will.py, billing.py, admin.py).
+- Split `Calculators.jsx` (~1500 lines) per-calculator.
+- Swap Resend / Twilio / Aadhaar mocks for real providers when keys are supplied.
+- Attach password-protected Will PDF to `/api/will/notify-beneficiaries` Resend call in production.
+- Add per-user rate-limit / dedupe on `/api/market/contribute`.
+
