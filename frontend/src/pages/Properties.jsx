@@ -702,7 +702,7 @@ function ListingModal({ property, onClose }) {
           <div className="p-6 space-y-5" data-testid="listing-result">
             <div className="card-flat p-5 border-[hsl(var(--secondary))]">
               <div className="flex items-start justify-between mb-3">
-                <div className="font-serif text-xl">{result.title}</div>
+                <div className="font-serif text-xl" data-testid="listing-title">{result.title}</div>
                 <button onClick={() => copyText(result.body)} className="btn-ghost p-2" title="Copy listing">
                   <Copy size={14} />
                 </button>
@@ -710,14 +710,14 @@ function ListingModal({ property, onClose }) {
               {result.ai_description && (
                 <div className="mb-4">
                   <div className="eyebrow mb-2 flex items-center gap-2 text-[hsl(var(--secondary))]"><Sparkle size={10} weight="fill" /> AI-written description</div>
-                  <div className="text-sm text-muted-foreground whitespace-pre-line leading-relaxed">{result.ai_description}</div>
+                  <div className="text-sm text-muted-foreground whitespace-pre-line leading-relaxed" data-testid="listing-ai-desc">{result.ai_description}</div>
                   <button onClick={() => copyText(result.ai_description)} className="btn-ghost text-xs px-2 py-1 mt-2 inline-flex items-center gap-1">
                     <Copy size={10} /> Copy AI description
                   </button>
                 </div>
               )}
               <div className="eyebrow mb-2">Structured listing (paste-ready)</div>
-              <pre className="text-xs text-muted-foreground whitespace-pre-wrap font-mono bg-[hsl(var(--muted))] p-3 max-h-64 overflow-y-auto">{result.body}</pre>
+              <pre className="text-xs text-muted-foreground whitespace-pre-wrap font-mono bg-[hsl(var(--muted))] p-3 max-h-64 overflow-y-auto" data-testid="listing-body">{result.body}</pre>
             </div>
 
             <div>

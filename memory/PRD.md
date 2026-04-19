@@ -190,3 +190,19 @@ Personal property buying options and decision making and managing — comparing 
 - Landing home-page features grid = 9 items in 3-col layout.
 
 **Tests:** iteration_10.json — 11/11 backend, 100% frontend on all new flows.
+
+## 2026-04-19 — AI-drafted Wills · Rental listings · Demo fix
+**AI-assisted Will drafting:**
+- POST /api/will/ai-draft — Claude Sonnet 4.5 takes a user's properties + family context + distribution style, returns `{beneficiaries, allocations, reasoning}` as strict JSON. Auto-normalizes each property's splits to sum to 100.
+- Will page gets an "AI-draft a distribution" button with a modal (family_context textarea + style selector: equal / spouse_first / legacy_trust / custom). Reasoning card shows above the form after drafting.
+
+**Rental listings ("List for rent in 1 click"):**
+- POST /api/listings/generate — renders a structured listing + optional Claude-written marketing description. Returns 7 deep-links: 99acres, MagicBricks, Housing.com, NoBroker, OLX (with query pre-fill), Quikr Homes, WhatsApp share (text pre-fill).
+- GET /api/listings — list past listings.
+- Owned-property cards now surface a "List for rent in 1 click" CTA. ListingModal captures rent/deposit/furnishing/preferences/amenities/contact + optional AI toggle. Result view has structured body (paste-ready pre), AI description (copy-able), and a 2-column grid of portal buttons.
+
+**Demo login fix:**
+- Root cause: demo seed inserted `type: "Flat"` (capitalized) — property schema validates lowercase-only, causing 500 on /properties list. Fixed seed values + migrated existing demo rows.
+- UserOut now includes `is_demo` flag.
+
+**Tests:** iteration_11.json — 10/10 backend, 100% frontend. All new endpoints + flows green.
