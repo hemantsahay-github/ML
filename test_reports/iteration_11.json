@@ -1,0 +1,77 @@
+{
+  "summary": "Iteration-11 testing complete. Backend 10/10 pytest green in 16.8s (demo-login + lowercase seeded types, Will AI-draft happy/auth/no-props-400, Listings generate+AI+no-ai+404+auth, GET /listings). Frontend Playwright 100% green: demo login -> /app without error toast; /app/will 'AI-draft a distribution' opens modal (family + style + go); 'Draft with AI' populates 6 beneficiaries + reasoning card; /app/properties shows list-for-rent button on owned property; listing modal -> Generate produces title+body+AI description+7 portal deep-links (99acres, MagicBricks, Housing.com, NoBroker, OLX, Quikr Homes, WhatsApp share) all https; copy button present; Calculators 14-tab regression OK.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "Properties.jsx ListingModal", "issue": "AI description block lacks data-testid (e.g. 'listing-ai-desc' and 'listing-title'). Renders visually but not queryable for automated verification.", "selector": "div rendering result.ai_description (line ~713)", "priority": "LOW"}
+    ],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "/app (post demo-login)", "issues": ["Product tour modal re-appears on /app even when localStorage.estima_tour_seen is set on /login before navigation. The tour is keyed differently or only honored when set post-auth. Automation workaround: click 'Skip tour'. User impact: not a regression for this iteration."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration11.py",
+    "/app/test_reports/pytest/iteration11_results.xml"
+  ],
+  "action_items": [
+    "Add data-testid='listing-ai-desc' to the AI description <div> in Properties.jsx ListingModal (~line 713) and data-testid='listing-title' + 'listing-body' on title/pre elements to improve testability.",
+    "(Optional) Ensure tour dismissal keys are respected when set on /login so demo flow doesn't surface tour modal on /app navigation."
+  ],
+  "critical_code_review_comments": [
+    "server.py is 4232 lines (+241 from it-10) — the new AIWillRequest, _extract_json, /will/ai-draft, /listings/generate, /listings endpoints should be split into /routers/ai.py + /routers/listings.py (guideline <700/file).",
+    "Properties.jsx is 794 lines and now hosts both the main page and ListingModal — extract ListingModal into src/components/ListingModal.jsx for maintainability.",
+    "_extract_json uses regex and json.loads; if Claude returns valid JSON inside multiple code fences or with JS-style comments the parse will fail and raise 502. Consider json5 or a more lenient parser.",
+    "/listings/generate saves listing doc BEFORE returning; if AI call succeeded but DB insert fails the user sees a 500 while AI credits were spent. Wrap save in try/except and still return the listing body.",
+    "Portal URLs hardcoded; they don't actually pre-fill 99acres/MagicBricks/Housing/NoBroker/Quikr fields (only OLX + WhatsApp carry the query). Docstring already admits this — consider a UI tooltip: 'Paste the copied text after portal page loads.'",
+    "No rate-limit on /will/ai-draft or /listings/generate — each call burns LLM credits. Add per-user throttle (e.g. 10/hour).",
+    "/will/ai-draft trusts AI JSON shape beyond property_id filtering — no validation that beneficiary_index in splits is within bounds of beneficiaries[], could cause frontend index-out-of-range rendering.",
+    "ai_description in listing response can be None on AI failure without surfacing the error to the user; consider returning a soft warning field so UI can show 'AI description temporarily unavailable'."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iteration11.py (new, 10 tests, all pass)"
+  ],
+  "success_rate": {"backend": "100% (10/10)", "frontend": "100% on all tested flows"},
+  "test_credentials": "admin@estima.com / Admin@123 (admin). Demo: POST /api/auth/demo-login (no body). A fresh TEST_it11_<uuid>@estima.com user was registered with Pass@1234 for the no-properties-400 test.",
+  "seed_data_creation": "Demo user (demo@estima.com) + 4 pre-seeded properties reused; 1 ephemeral TEST_it11_* user registered; multiple listing docs created under demo_user (verified via GET /api/listings returning >=1 item).",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Iteration 11 backend has 2 new endpoints — /api/will/ai-draft (AIWillRequest: family_context/distribution_style/custom_note) and /api/listings/generate (RentalListingRequest) + /api/listings. AI calls use Claude Sonnet 4.5 via EMERGENT_LLM_KEY and complete in 3-8s. Server-side normalizes each property's splits to ~100 after AI response; expect sum in [98,102]. Demo login still returns UserOut without is_demo field (carry-over from it-10) but is_pro=true + plan='pro'. Demo seeded properties now correctly have lowercase type ('flat'/'villa'). Only 1 demo property has status 'rented' (Indiranagar Flat) so list-for-rent button renders on exactly 1 card in UI. Portal links return all 7 portals; only OLX + WhatsApp pre-fill the search/share text via URL — others just link to 'post property' landing. Tour modal still intrudes on /app after demo login; use page.evaluate localStorage.setItem before clicking demo + explicit 'Skip tour' fallback in Playwright.",
+  "backend_test_summary": {
+    "total": 10,
+    "passed": 10,
+    "failed": 0,
+    "coverage": [
+      "POST /api/auth/demo-login -> 200, email=demo@estima.com, is_pro=true",
+      "GET /api/properties (demo) -> >=4 props, all with lowercase type in {flat,villa,plot,commercial,other}",
+      "POST /api/will/ai-draft unauth -> 401/403",
+      "POST /api/will/ai-draft fresh-user-no-props -> 400 'No properties to distribute'",
+      "POST /api/will/ai-draft demo+family_context -> {ok:true, beneficiaries>=1, allocations only reference demo property IDs, splits sum in [98,102]}",
+      "POST /api/listings/generate unauth -> 401/403",
+      "POST /api/listings/generate invalid property_id -> 404 'Property not found'",
+      "POST /api/listings/generate use_ai=false -> ai_description null, title+body+7 https links",
+      "POST /api/listings/generate use_ai=true -> ai_description string len>30",
+      "GET /api/listings (demo) -> array with id+title+body, no _id leak"
+    ]
+  },
+  "frontend_test_summary": {
+    "verified_flows": [
+      "/login data-testid='login-demo-button' -> /app without error toast",
+      "/app/will data-testid='will-ai-open' opens modal with family/style/go",
+      "'Draft with AI' populates 6 beneficiaries + reasoning card ('Equal distribution across wife and 2 children...')",
+      "/app/properties data-testid='list-for-rent-{id}' present on owned/rented card (1 found for Indiranagar Flat)",
+      "listing modal -> Generate -> data-testid='listing-result' renders; 7 portal hrefs all https (99acres/MagicBricks/Housing.com/NoBroker/OLX/Quikr Homes/WhatsApp share)",
+      "data-testid='listing-copy' button visible",
+      "/app/calculators regression — 14 tabs visible + 'The brutal math.' heading + Why-buy form rendered"
+    ],
+    "not_fully_exercised": [
+      "Actual click-through of portal deep-links (by design — they go to external sites)",
+      "Clipboard write of listing-copy (browser permission prompts in Playwright headless; copyText function logged 'copied' toast path not asserted)",
+      "AI description UI rendering — backend confirmed present; frontend lacks data-testid so couldn't assert innerText > 0 in the list-for-rent Generate flow"
+    ]
+  },
+  "rca of the issue": "N/A — no failures. Minor data-testid gap on ListingModal AI description block prevented full automated text assertion, but backend test_generate_with_ai confirms AI returns >30-char description and network payload flows to the component."
+}

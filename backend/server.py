@@ -8,6 +8,8 @@ import os
 import uuid
 import logging
 import secrets
+import json
+import urllib.parse
 from datetime import datetime, timezone, timedelta
 from typing import List, Optional, Literal
 
@@ -3802,6 +3804,244 @@ async def save_will(body: WillRequest, user: dict = Depends(get_current_user)):
     )
     saved = await db.wills.find_one({"user_id": user["id"]}, {"_id": 0})
     return {"ok": True, "will": saved}
+
+
+class AIWillRequest(BaseModel):
+    family_context: str           # free-text: "wife + 2 children aged 12 and 8; widowed mother"
+    distribution_style: Literal["equal", "spouse_first", "legacy_trust", "custom"] = "equal"
+    custom_note: Optional[str] = None
+
+
+def _extract_json(text: str) -> dict:
+    """Robust JSON extractor — handles fenced codeblocks, prose preamble, trailing commas."""
+    import re as _re
+    if not text:
+        raise ValueError("empty response")
+    # Strip code-fences
+    m = _re.search(r"```(?:json)?\s*([\s\S]*?)```", text)
+    candidate = m.group(1) if m else text
+    # Find first { ... last }
+    start = candidate.find("{")
+    end = candidate.rfind("}")
+    if start == -1 or end == -1 or end <= start:
+        raise ValueError("no JSON object found in response")
+    blob = candidate[start:end + 1]
+    # Drop trailing commas before ] or }
+    blob = _re.sub(r",\s*([\]}])", r"\1", blob)
+    return json.loads(blob)
+
+
+@api_router.post("/will/ai-draft")
+async def ai_draft_will(body: AIWillRequest, user: dict = Depends(get_current_user)):
+    if not EMERGENT_LLM_KEY:
+        raise HTTPException(500, "AI is not configured")
+    props = await db.properties.find({"user_id": user["id"]}, {"_id": 0}).to_list(200)
+    props_for_ai = [
+        {
+            "id": p["id"],
+            "name": p.get("name", ""),
+            "type": p.get("type", ""),
+            "location": p.get("location", ""),
+            "status": p.get("status", ""),
+            "current_value": p.get("current_value") or p.get("price", 0),
+            "monthly_rent_income": p.get("monthly_rent_income", 0),
+        }
+        for p in props
+        if p.get("status") != "sold"
+    ]
+    if not props_for_ai:
+        raise HTTPException(400, "No properties to distribute. Add at least one first.")
+
+    style_hints = {
+        "equal": "Distribute each property equally across all beneficiaries.",
+        "spouse_first": "Give the spouse majority share (60-70%) of primary residence; split the rest equally among children.",
+        "legacy_trust": "Put high-value properties in trust for minor children; give spouse right of residence.",
+        "custom": body.custom_note or "Use judgement based on family context.",
+    }
+
+    system = (
+        "You are an Indian estate-planning advisor. Given a user's properties and family situation, "
+        "propose a legally-sensible Will distribution. You MUST output STRICT JSON only — no prose, no codefences. "
+        "The schema is: {\"beneficiaries\": [{\"name\": str, \"relation\": str, \"suggested_share_note\": str}], "
+        "\"allocations\": [{\"property_id\": str, \"splits\": [{\"beneficiary_index\": int, \"percentage\": int}]}], "
+        "\"reasoning\": str (short markdown, <=300 chars)}. "
+        "beneficiary_index is 0-indexed into the beneficiaries array. "
+        "Each property's splits must sum to 100. Infer realistic names from the family_context if not stated (e.g. 'Spouse', 'Elder son', 'Younger daughter'). "
+        "Consider Indian Succession Act norms: equal shares unless context says otherwise; minors inherit via guardian."
+    )
+    user_text = (
+        f"Family context: {body.family_context}\n"
+        f"Distribution style: {body.distribution_style} — {style_hints[body.distribution_style]}\n"
+        f"Properties to distribute (id + name + location + value):\n"
+        f"{json.dumps(props_for_ai, indent=2)}\n\n"
+        "Return STRICT JSON per the schema."
+    )
+    session_id = f"will-draft-{user['id']}-{uuid.uuid4().hex[:8]}"
+    chat = LlmChat(api_key=EMERGENT_LLM_KEY, session_id=session_id, system_message=system).with_model("anthropic", "claude-sonnet-4-5-20250929")
+    try:
+        raw = await chat.send_message(UserMessage(text=user_text))
+    except Exception as e:
+        logger.exception("AI will draft error")
+        raise HTTPException(502, f"AI call failed: {e}")
+    try:
+        parsed = _extract_json(raw)
+    except Exception:
+        logger.exception("AI JSON parse failed — raw: %s", raw[:500])
+        raise HTTPException(502, "AI returned non-JSON; please try again.")
+
+    # Defensive shape check + percentage normalization
+    benes = parsed.get("beneficiaries") or []
+    allocs = parsed.get("allocations") or []
+    # Keep only allocations for known property ids
+    known_ids = {p["id"] for p in props_for_ai}
+    allocs = [a for a in allocs if a.get("property_id") in known_ids]
+    for a in allocs:
+        total = sum(float(s.get("percentage") or 0) for s in a.get("splits", []))
+        if 0 < total < 99.5 or total > 100.5:
+            # renormalize to 100
+            if total > 0:
+                for s in a.get("splits", []):
+                    s["percentage"] = round((float(s.get("percentage") or 0) / total) * 100)
+    return {
+        "ok": True,
+        "beneficiaries": benes,
+        "allocations": allocs,
+        "reasoning": parsed.get("reasoning") or "",
+        "property_count": len(props_for_ai),
+    }
+
+
+# ------------------------------------------------------------
+# Rental listing — pre-filled ad + deep-links to rental portals
+# ------------------------------------------------------------
+class RentalListingRequest(BaseModel):
+    property_id: str
+    monthly_rent: float
+    security_deposit: float = 0
+    furnishing: Literal["fully_furnished", "semi_furnished", "unfurnished"] = "semi_furnished"
+    tenant_preferences: List[str] = []   # e.g. ["family", "bachelors_male", "bachelors_female", "company"]
+    amenities: List[str] = []
+    available_from: Optional[str] = None  # YYYY-MM-DD
+    description_addons: Optional[str] = None
+    contact_name: Optional[str] = None
+    contact_phone: Optional[str] = None
+    contact_email: Optional[str] = None
+    use_ai: bool = True
+
+
+def _render_listing_text(p: dict, body: RentalListingRequest) -> dict:
+    furn_label = {"fully_furnished": "Fully Furnished", "semi_furnished": "Semi-Furnished", "unfurnished": "Unfurnished"}[body.furnishing]
+    bhk_hint = ""
+    n = p.get("name", "") or ""
+    for token in ("1BHK", "2BHK", "3BHK", "4BHK", "5BHK", "Studio"):
+        if token.lower() in n.lower():
+            bhk_hint = f"{token} "
+            break
+    title = f"{bhk_hint}{p.get('type', 'Property').title()} for Rent · {p.get('location', '') or p.get('city', '')}"
+    rent = int(body.monthly_rent)
+    deposit = int(body.security_deposit or max(rent * 2, 0))
+    pref_str = ", ".join(body.tenant_preferences) if body.tenant_preferences else "Any"
+    amenities = "\n".join(f"  • {a}" for a in body.amenities) if body.amenities else "  • (see listing for full list)"
+    avail = body.available_from or "Immediate"
+    area = p.get("area_sqft")
+    area_str = f"{int(area)} sqft" if area else "—"
+    addons = f"\n\n{body.description_addons}" if body.description_addons else ""
+    body_text = (
+        f"{title}\n\n"
+        f"Location: {p.get('location', 'N/A')}\n"
+        f"Type: {p.get('type', 'Property').title()}\n"
+        f"Built-up area: {area_str}\n"
+        f"Furnishing: {furn_label}\n"
+        f"Available from: {avail}\n"
+        f"Preferred tenants: {pref_str}\n\n"
+        f"Rent: ₹{rent:,}/month\n"
+        f"Security deposit: ₹{deposit:,}\n\n"
+        f"Amenities:\n{amenities}{addons}\n\n"
+        f"Contact: {body.contact_name or '[your name]'} · "
+        f"{body.contact_phone or '[phone]'} · {body.contact_email or '[email]'}\n\n"
+        f"Listed via Estima — your property decision engine."
+    )
+    # Deep-links (portals rarely accept fully pre-filled params; we link to their 'post ad' pages with a description pre-copied)
+    query = urllib.parse.quote(f"{title} | Rent ₹{rent}/mo | {p.get('location', '')}")
+    links = [
+        {"portal": "99acres", "url": "https://www.99acres.com/rn-post-property?src=organic"},
+        {"portal": "MagicBricks", "url": "https://www.magicbricks.com/post-property?src=organic"},
+        {"portal": "Housing.com", "url": "https://housing.com/in/buy/post-property-for-sale"},
+        {"portal": "NoBroker", "url": "https://www.nobroker.in/post-property-free-ads-i"},
+        {"portal": "OLX", "url": f"https://www.olx.in/post?category=1460&query={query}"},
+        {"portal": "Quikr Homes", "url": "https://www.quikr.com/homes/post-property"},
+        {"portal": "WhatsApp share", "url": f"https://wa.me/?text={urllib.parse.quote(body_text)}"},
+    ]
+    return {"title": title, "body": body_text, "links": links}
+
+
+@api_router.post("/listings/generate")
+async def generate_listing(body: RentalListingRequest, user: dict = Depends(get_current_user)):
+    p = await db.properties.find_one({"id": body.property_id, "user_id": user["id"]}, {"_id": 0})
+    if not p:
+        raise HTTPException(404, "Property not found")
+
+    base = _render_listing_text(p, body)
+
+    ai_description = None
+    if body.use_ai and EMERGENT_LLM_KEY:
+        # Use Claude to generate a polished marketing description
+        system = (
+            "You are an Indian real-estate copywriter. Write a concise, compelling rental listing description "
+            "(150-220 words, 2 short paragraphs) highlighting the location, amenities, and target-tenant fit. "
+            "Use plain text — no markdown, no emoji. Focus on lifestyle + commute + family-friendliness."
+        )
+        user_text = json.dumps({
+            "property": {"name": p.get("name"), "type": p.get("type"), "location": p.get("location"), "area_sqft": p.get("area_sqft")},
+            "monthly_rent": body.monthly_rent,
+            "furnishing": body.furnishing,
+            "tenant_preferences": body.tenant_preferences,
+            "amenities": body.amenities,
+            "addons": body.description_addons,
+        }, indent=2)
+        try:
+            chat = LlmChat(
+                api_key=EMERGENT_LLM_KEY,
+                session_id=f"listing-{user['id']}-{uuid.uuid4().hex[:6]}",
+                system_message=system,
+            ).with_model("anthropic", "claude-sonnet-4-5-20250929")
+            ai_description = await chat.send_message(UserMessage(text=f"Write the listing description for this property:\n{user_text}"))
+        except Exception:
+            logger.exception("AI listing description failed")
+            ai_description = None
+
+    # Save a snapshot for user convenience
+    listing_doc = {
+        "id": str(uuid.uuid4()),
+        "user_id": user["id"],
+        "property_id": body.property_id,
+        "title": base["title"],
+        "body": base["body"],
+        "ai_description": ai_description,
+        "monthly_rent": body.monthly_rent,
+        "security_deposit": body.security_deposit,
+        "furnishing": body.furnishing,
+        "tenant_preferences": body.tenant_preferences,
+        "amenities": body.amenities,
+        "available_from": body.available_from,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.listings.insert_one(listing_doc.copy())
+    listing_doc.pop("_id", None)
+
+    return {
+        "listing": listing_doc,
+        "title": base["title"],
+        "body": base["body"],
+        "ai_description": ai_description,
+        "links": base["links"],
+    }
+
+
+@api_router.get("/listings")
+async def my_listings(user: dict = Depends(get_current_user)):
+    docs = await db.listings.find({"user_id": user["id"]}, {"_id": 0}).sort("created_at", -1).to_list(200)
+    return docs
 
 
 @api_router.get("/will/pdf")

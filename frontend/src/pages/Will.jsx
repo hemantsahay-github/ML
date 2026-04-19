@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import api, { formatApiErrorDetail } from "../lib/api";
 import { toast } from "sonner";
-import { FilePdf, Plus, Trash, UserPlus, FloppyDisk, ShieldCheck } from "@phosphor-icons/react";
+import { FilePdf, Plus, Trash, UserPlus, FloppyDisk, ShieldCheck, Sparkle } from "@phosphor-icons/react";
 import Disclaimer from "../components/Disclaimer";
 
 export default function Will() {
@@ -130,17 +130,69 @@ export default function Will() {
     }
   };
 
+  const [aiOpen, setAiOpen] = useState(false);
+  const [aiForm, setAiForm] = useState({ family_context: "", distribution_style: "equal", custom_note: "" });
+  const [aiLoading, setAiLoading] = useState(false);
+  const [aiReasoning, setAiReasoning] = useState("");
+
+  const aiDraft = async () => {
+    if (!aiForm.family_context.trim()) {
+      toast.error("Describe your family situation first");
+      return;
+    }
+    setAiLoading(true);
+    try {
+      const { data } = await api.post("/will/ai-draft", aiForm);
+      setForm({
+        ...form,
+        beneficiaries: data.beneficiaries.length
+          ? data.beneficiaries.map((b) => ({
+              name: b.name || "",
+              relation: b.relation || "",
+              email: "",
+              phone: "",
+              notes: b.suggested_share_note || "",
+            }))
+          : form.beneficiaries,
+        allocations: data.allocations || [],
+      });
+      setAiReasoning(data.reasoning || "");
+      setAiOpen(false);
+      toast.success(`AI drafted ${data.allocations.length} property allocation${data.allocations.length === 1 ? "" : "s"} — review and edit`);
+    } catch (e) {
+      toast.error(formatApiErrorDetail(e.response?.data?.detail) || "AI draft failed");
+    } finally {
+      setAiLoading(false);
+    }
+  };
+
   if (loading) return <div className="max-w-7xl mx-auto px-8 py-12 text-muted-foreground">Loading…</div>;
 
   return (
     <div className="max-w-5xl mx-auto px-8 py-10" data-testid="will-page">
-      <div className="mb-8">
-        <div className="eyebrow mb-2">Succession planning</div>
-        <h1 className="font-serif text-5xl">Draft your Will.</h1>
-        <p className="text-muted-foreground mt-3 max-w-2xl">
-          Distribute your properties to the next generation with clarity. Draft, save, and download a printable PDF. Review with a lawyer before signing — our Wills comply with the Indian Succession Act format.
-        </p>
+      <div className="mb-8 flex items-start justify-between gap-4 flex-wrap">
+        <div>
+          <div className="eyebrow mb-2">Succession planning</div>
+          <h1 className="font-serif text-5xl">Draft your Will.</h1>
+          <p className="text-muted-foreground mt-3 max-w-2xl">
+            Distribute your properties to the next generation with clarity. Draft, save, and download a printable PDF. Review with a lawyer before signing — our Wills comply with the Indian Succession Act format.
+          </p>
+        </div>
+        <button
+          onClick={() => setAiOpen(true)}
+          className="btn-ghost px-4 py-2.5 text-sm inline-flex items-center gap-2 border border-[hsl(var(--secondary))] text-[hsl(var(--secondary))]"
+          data-testid="will-ai-open"
+        >
+          <Sparkle size={14} weight="duotone" /> AI-draft a distribution
+        </button>
       </div>
+
+      {aiReasoning && (
+        <div className="card-flat p-5 mb-6 border-[hsl(var(--secondary))]" data-testid="will-ai-reasoning">
+          <div className="eyebrow text-[hsl(var(--secondary))] mb-2 flex items-center gap-2"><Sparkle size={12} weight="fill" /> AI reasoning</div>
+          <div className="text-sm text-muted-foreground whitespace-pre-line">{aiReasoning}</div>
+        </div>
+      )}
 
       {/* Testator */}
       <section className="card-flat p-6 mb-6">
@@ -257,6 +309,56 @@ export default function Will() {
       </div>
 
       <Disclaimer />
+
+      {aiOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center">
+          <div className="absolute inset-0 bg-background/80" onClick={() => setAiOpen(false)} />
+          <div className="relative card-flat w-full max-w-lg mx-6 p-8" data-testid="will-ai-modal">
+            <div className="eyebrow mb-2 flex items-center gap-2 text-[hsl(var(--secondary))]"><Sparkle size={14} weight="fill" /> AI-assisted Will</div>
+            <h3 className="font-serif text-3xl mb-4">Describe your family.</h3>
+            <p className="text-sm text-muted-foreground mb-5">
+              Claude Sonnet 4.5 will read your properties + family context and propose a sensible distribution. You can edit every line after.
+            </p>
+            <label className="block mb-4">
+              <span className="eyebrow block mb-1.5">Family situation *</span>
+              <textarea
+                rows={4}
+                className="input-dark w-full px-3 py-2"
+                placeholder="e.g. Wife Priya + 2 children (Arjun 12, Ananya 8). Widowed mother Sunita lives with us."
+                value={aiForm.family_context}
+                onChange={(e) => setAiForm({ ...aiForm, family_context: e.target.value })}
+                data-testid="will-ai-family"
+              />
+            </label>
+            <label className="block mb-4">
+              <span className="eyebrow block mb-1.5">Style</span>
+              <select
+                className="input-dark w-full px-3 py-2"
+                value={aiForm.distribution_style}
+                onChange={(e) => setAiForm({ ...aiForm, distribution_style: e.target.value })}
+                data-testid="will-ai-style"
+              >
+                <option value="equal">Equal split across beneficiaries</option>
+                <option value="spouse_first">Spouse gets majority of primary residence</option>
+                <option value="legacy_trust">Trust for minor children</option>
+                <option value="custom">Custom (describe below)</option>
+              </select>
+            </label>
+            {aiForm.distribution_style === "custom" && (
+              <label className="block mb-4">
+                <span className="eyebrow block mb-1.5">Custom note</span>
+                <textarea rows={2} className="input-dark w-full px-3 py-2" value={aiForm.custom_note} onChange={(e) => setAiForm({ ...aiForm, custom_note: e.target.value })} />
+              </label>
+            )}
+            <div className="flex gap-3 mt-6">
+              <button onClick={aiDraft} disabled={aiLoading} className="btn-primary px-5 py-2.5 text-sm flex-1 inline-flex items-center justify-center gap-2" data-testid="will-ai-go">
+                {aiLoading ? "Claude is drafting…" : <><Sparkle size={14} /> Draft with AI</>}
+              </button>
+              <button onClick={() => setAiOpen(false)} className="btn-ghost px-5 py-2.5 text-sm">Cancel</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

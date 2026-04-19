@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import api, { formatApiErrorDetail } from "../lib/api";
 import { toast } from "sonner";
 import { inr } from "../lib/format";
-import { Plus, Trash, PencilSimple, X, MapPin } from "@phosphor-icons/react";
+import { Plus, Trash, PencilSimple, X, MapPin, Megaphone, Sparkle, Copy, ArrowSquareOut } from "@phosphor-icons/react";
 
 const blank = {
   name: "",
@@ -41,6 +41,7 @@ export default function Properties() {
   const [isEdit, setIsEdit] = useState(false);
   const [cities, setCities] = useState([]);
   const [filter, setFilter] = useState("all"); // all | evaluating | owned
+  const [listingFor, setListingFor] = useState(null); // property to list for rent
 
   const load = async () => {
     setLoading(true);
@@ -283,6 +284,15 @@ export default function Properties() {
                       </span>
                     ))}
                   </div>
+                  {p.status === "owned" && (
+                    <button
+                      onClick={(e) => { e.stopPropagation(); setListingFor(p); }}
+                      className="btn-ghost w-full mt-3 py-2 text-xs inline-flex items-center justify-center gap-2 border border-dashed border-[hsl(var(--secondary))] text-[hsl(var(--secondary))]"
+                      data-testid={`list-for-rent-${p.id}`}
+                    >
+                      <Megaphone size={12} weight="duotone" /> List for rent in 1 click
+                    </button>
+                  )}
                 </div>
               ))}
             </div>
@@ -523,6 +533,224 @@ export default function Properties() {
           </form>
         </Drawer>
       )}
+
+      {listingFor && <ListingModal property={listingFor} onClose={() => setListingFor(null)} />}
+    </div>
+  );
+}
+
+function ListingModal({ property, onClose }) {
+  const [form, setForm] = useState({
+    property_id: property.id,
+    monthly_rent: property.monthly_rent_income || Math.round((property.current_value || property.price) * 0.03 / 12),
+    security_deposit: 0,
+    furnishing: "semi_furnished",
+    tenant_preferences: ["family"],
+    amenities: [],
+    available_from: new Date().toISOString().slice(0, 10),
+    description_addons: "",
+    contact_name: "",
+    contact_phone: "",
+    contact_email: "",
+    use_ai: true,
+  });
+  const [amenityInput, setAmenityInput] = useState("");
+  const [result, setResult] = useState(null);
+  const [loading, setLoading] = useState(false);
+
+  const addAmenity = () => {
+    if (!amenityInput.trim()) return;
+    setForm({ ...form, amenities: [...form.amenities, amenityInput.trim()] });
+    setAmenityInput("");
+  };
+  const delAmenity = (i) => setForm({ ...form, amenities: form.amenities.filter((_, j) => j !== i) });
+  const togglePref = (p) =>
+    setForm({
+      ...form,
+      tenant_preferences: form.tenant_preferences.includes(p)
+        ? form.tenant_preferences.filter((x) => x !== p)
+        : [...form.tenant_preferences, p],
+    });
+
+  const generate = async () => {
+    if (!form.monthly_rent) {
+      toast.error("Monthly rent is required");
+      return;
+    }
+    setLoading(true);
+    try {
+      const { data } = await api.post("/listings/generate", {
+        ...form,
+        monthly_rent: Number(form.monthly_rent),
+        security_deposit: Number(form.security_deposit || 0),
+      });
+      setResult(data);
+    } catch (e) {
+      toast.error(formatApiErrorDetail(e.response?.data?.detail) || "Could not generate listing");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const copyText = (txt) => {
+    navigator.clipboard.writeText(txt);
+    toast.success("Copied to clipboard — paste into any rental portal");
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex justify-end" data-testid="listing-modal">
+      <div className="absolute inset-0 bg-background/70" onClick={onClose} />
+      <div className="relative w-full max-w-2xl bg-card border-l hairline overflow-y-auto">
+        <div className="flex items-center justify-between p-6 border-b hairline sticky top-0 bg-card z-10">
+          <div>
+            <div className="eyebrow flex items-center gap-2 text-[hsl(var(--secondary))]"><Megaphone size={12} weight="duotone" /> List for rent</div>
+            <div className="font-serif text-2xl mt-1">{property.name}</div>
+          </div>
+          <button onClick={onClose} className="btn-ghost p-2"><X size={16} /></button>
+        </div>
+
+        {!result ? (
+          <div className="p-6 space-y-4">
+            <div className="grid grid-cols-2 gap-3">
+              <Field label="Monthly rent (₹)" required>
+                <input type="number" className="input-dark w-full px-3 py-2" value={form.monthly_rent} onChange={(e) => setForm({ ...form, monthly_rent: e.target.value })} data-testid="listing-rent" />
+              </Field>
+              <Field label="Security deposit (₹)">
+                <input type="number" className="input-dark w-full px-3 py-2" value={form.security_deposit} onChange={(e) => setForm({ ...form, security_deposit: e.target.value })} />
+              </Field>
+            </div>
+            <Field label="Furnishing">
+              <select className="input-dark w-full px-3 py-2" value={form.furnishing} onChange={(e) => setForm({ ...form, furnishing: e.target.value })} data-testid="listing-furnishing">
+                <option value="fully_furnished">Fully Furnished</option>
+                <option value="semi_furnished">Semi-Furnished</option>
+                <option value="unfurnished">Unfurnished</option>
+              </select>
+            </Field>
+            <Field label="Available from">
+              <input type="date" className="input-dark w-full px-3 py-2" value={form.available_from} onChange={(e) => setForm({ ...form, available_from: e.target.value })} />
+            </Field>
+            <div>
+              <span className="eyebrow block mb-2">Preferred tenants</span>
+              <div className="flex flex-wrap gap-2">
+                {["family", "bachelors_male", "bachelors_female", "company", "any"].map((p) => (
+                  <button
+                    key={p}
+                    type="button"
+                    onClick={() => togglePref(p)}
+                    className={`text-xs px-3 py-1.5 border ${form.tenant_preferences.includes(p) ? "bg-[hsl(var(--secondary))] text-white border-[hsl(var(--secondary))]" : "hairline text-muted-foreground"}`}
+                  >
+                    {p.replace("_", " ")}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div>
+              <span className="eyebrow block mb-2">Amenities</span>
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  className="input-dark px-3 py-2 flex-1"
+                  placeholder="e.g. Swimming pool, Gym, Kids play area"
+                  value={amenityInput}
+                  onChange={(e) => setAmenityInput(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && (e.preventDefault(), addAmenity())}
+                />
+                <button onClick={addAmenity} className="btn-ghost px-3 py-2 text-sm">Add</button>
+              </div>
+              {form.amenities.length > 0 && (
+                <div className="flex flex-wrap gap-2 mt-3">
+                  {form.amenities.map((a, i) => (
+                    <span key={i} className="text-xs px-2 py-1 bg-[hsl(var(--muted))] inline-flex items-center gap-1">
+                      {a}
+                      <button onClick={() => delAmenity(i)} className="hover:text-destructive"><X size={10} /></button>
+                    </span>
+                  ))}
+                </div>
+              )}
+            </div>
+            <Field label="Extra description (optional)">
+              <textarea rows={2} className="input-dark w-full px-3 py-2" value={form.description_addons} onChange={(e) => setForm({ ...form, description_addons: e.target.value })} />
+            </Field>
+            <div className="grid grid-cols-2 gap-3 pt-3 border-t hairline">
+              <Field label="Your name">
+                <input className="input-dark w-full px-3 py-2" value={form.contact_name} onChange={(e) => setForm({ ...form, contact_name: e.target.value })} />
+              </Field>
+              <Field label="Phone">
+                <input className="input-dark w-full px-3 py-2" value={form.contact_phone} onChange={(e) => setForm({ ...form, contact_phone: e.target.value })} />
+              </Field>
+            </div>
+            <Field label="Email">
+              <input className="input-dark w-full px-3 py-2" value={form.contact_email} onChange={(e) => setForm({ ...form, contact_email: e.target.value })} />
+            </Field>
+            <label className="flex items-center gap-2 text-sm pt-2">
+              <input
+                type="checkbox"
+                checked={form.use_ai}
+                onChange={(e) => setForm({ ...form, use_ai: e.target.checked })}
+                className="accent-[hsl(var(--primary))]"
+              />
+              <span className="flex items-center gap-1"><Sparkle size={12} /> Let Claude write a polished description</span>
+            </label>
+            <div className="flex gap-3 pt-3">
+              <button onClick={generate} disabled={loading} className="btn-primary px-5 py-2.5 text-sm flex-1 inline-flex items-center justify-center gap-2" data-testid="listing-generate">
+                {loading ? "Generating…" : <><Megaphone size={14} /> Generate listing</>}
+              </button>
+              <button onClick={onClose} className="btn-ghost px-5 py-2.5 text-sm">Cancel</button>
+            </div>
+          </div>
+        ) : (
+          <div className="p-6 space-y-5" data-testid="listing-result">
+            <div className="card-flat p-5 border-[hsl(var(--secondary))]">
+              <div className="flex items-start justify-between mb-3">
+                <div className="font-serif text-xl">{result.title}</div>
+                <button onClick={() => copyText(result.body)} className="btn-ghost p-2" title="Copy listing">
+                  <Copy size={14} />
+                </button>
+              </div>
+              {result.ai_description && (
+                <div className="mb-4">
+                  <div className="eyebrow mb-2 flex items-center gap-2 text-[hsl(var(--secondary))]"><Sparkle size={10} weight="fill" /> AI-written description</div>
+                  <div className="text-sm text-muted-foreground whitespace-pre-line leading-relaxed">{result.ai_description}</div>
+                  <button onClick={() => copyText(result.ai_description)} className="btn-ghost text-xs px-2 py-1 mt-2 inline-flex items-center gap-1">
+                    <Copy size={10} /> Copy AI description
+                  </button>
+                </div>
+              )}
+              <div className="eyebrow mb-2">Structured listing (paste-ready)</div>
+              <pre className="text-xs text-muted-foreground whitespace-pre-wrap font-mono bg-[hsl(var(--muted))] p-3 max-h-64 overflow-y-auto">{result.body}</pre>
+            </div>
+
+            <div>
+              <div className="eyebrow mb-3">One-click post to rental portals</div>
+              <div className="grid grid-cols-2 gap-2">
+                {result.links.map((l) => (
+                  <a
+                    key={l.portal}
+                    href={l.url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="btn-ghost px-3 py-2.5 text-xs inline-flex items-center justify-between gap-2 hover:border-[hsl(var(--secondary))]"
+                    data-testid={`portal-${l.portal.toLowerCase().replace(/\s+/g, '-')}`}
+                  >
+                    <span>{l.portal}</span>
+                    <ArrowSquareOut size={12} />
+                  </a>
+                ))}
+              </div>
+              <p className="text-[11px] text-muted-foreground mt-3">
+                Most portals open their official "post free ad" page. We've copied your listing to clipboard — just paste when it loads.
+              </p>
+            </div>
+
+            <div className="flex gap-3 pt-3">
+              <button onClick={() => copyText(result.body)} className="btn-primary px-5 py-2.5 text-sm inline-flex items-center gap-2" data-testid="listing-copy">
+                <Copy size={14} /> Copy listing text
+              </button>
+              <button onClick={() => setResult(null)} className="btn-ghost px-5 py-2.5 text-sm">Edit again</button>
+            </div>
+          </div>
+        )}
+      </div>
     </div>
   );
 }
