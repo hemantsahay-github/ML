@@ -12,6 +12,7 @@ import {
   DownloadSimple,
   PaperPlaneTilt,
   UserCircle,
+  Key,
 } from "@phosphor-icons/react";
 
 const blankTenant = {
@@ -153,6 +154,21 @@ export default function Tenants() {
     }
   };
 
+  const inviteTenant = async (t) => {
+    if (!t.email) {
+      toast.error("Add the tenant's email first");
+      return;
+    }
+    if (!confirm(`Create a login for ${t.name}? They'll get an email with their temporary password.`)) return;
+    try {
+      const { data } = await api.post(`/tenants/${t.id}/invite`, {});
+      toast.success(`Login created · temp password: ${data.temp_password}`, { duration: 12000 });
+      load();
+    } catch (e) {
+      toast.error(formatApiErrorDetail(e.response?.data?.detail));
+    }
+  };
+
   return (
     <div className="max-w-7xl mx-auto px-8 py-10" data-testid="tenants-page">
       <div className="flex items-end justify-between mb-8 flex-wrap gap-4">
@@ -223,6 +239,15 @@ export default function Tenants() {
                 data-testid={`tenant-receipts-${t.id}`}
               >
                 <Receipt size={14} /> Receipts
+              </button>
+              <button
+                onClick={() => inviteTenant(t)}
+                className="btn-ghost w-full mt-2 py-2 text-xs inline-flex items-center justify-center gap-2"
+                data-testid={`tenant-invite-${t.id}`}
+                title={t.portal_user_id ? "Reset login (sends new password)" : "Create tenant login"}
+              >
+                <Key size={12} />
+                {t.portal_user_id ? "Reset tenant login" : "Invite to tenant portal"}
               </button>
             </div>
           ))}

@@ -20,7 +20,10 @@ export default function Login() {
   const [err, setErr] = useState("");
 
   useEffect(() => {
-    if (user) nav(from, { replace: true });
+    if (user) {
+      if (user.role === "tenant") nav("/tenant", { replace: true });
+      else nav(from, { replace: true });
+    }
   }, [user, from, nav]);
 
   const submit = async (e) => {
@@ -35,7 +38,8 @@ export default function Login() {
       return;
     }
     toast.success("Welcome back.");
-    nav(from, { replace: true });
+    const target = res.user?.role === "tenant" ? "/tenant" : from;
+    nav(target, { replace: true });
   };
 
   return (

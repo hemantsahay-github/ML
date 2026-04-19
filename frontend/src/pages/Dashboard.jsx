@@ -3,23 +3,26 @@ import { Link } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 import api from "../lib/api";
 import { inr } from "../lib/format";
-import { ArrowRight, Buildings, Plus, TrendUp, Scales } from "@phosphor-icons/react";
+import { ArrowRight, Buildings, Plus, TrendUp, Scales, MapTrifold, Calendar, MapPin } from "@phosphor-icons/react";
 
 export default function Dashboard() {
   const { user } = useAuth();
   const [props, setProps] = useState([]);
   const [portfolio, setPortfolio] = useState(null);
+  const [watched, setWatched] = useState([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     (async () => {
       try {
-        const [pRes, poRes] = await Promise.all([
+        const [pRes, poRes, wRes] = await Promise.all([
           api.get("/properties"),
           api.get("/portfolio/summary"),
+          api.get("/projects/watched").catch(() => ({ data: { projects: [] } })),
         ]);
         setProps(pRes.data);
         setPortfolio(poRes.data);
+        setWatched(wRes.data.projects || []);
       } finally {
         setLoading(false);
       }
@@ -111,6 +114,57 @@ export default function Dashboard() {
           </div>
         )}
       </section>
+
+      {/* Projects you're tracking */}
+      {watched.length > 0 && (
+        <section className="mt-14" data-testid="dashboard-watched-section">
+          <div className="flex items-center justify-between mb-6">
+            <div>
+              <h2 className="font-serif text-3xl flex items-center gap-3">
+                <MapTrifold size={24} weight="duotone" className="text-[hsl(var(--secondary))]" />
+                Projects you&apos;re tracking
+              </h2>
+              <p className="text-sm text-muted-foreground mt-1">Upcoming and under-construction launches on your watchlist.</p>
+            </div>
+            <Link to="/app/projects" className="text-sm text-muted-foreground hover:text-foreground inline-flex items-center gap-1">
+              Browse all <ArrowRight size={14} />
+            </Link>
+          </div>
+          <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-6">
+            {watched.slice(0, 3).map((p) => (
+              <div key={p.id} className="card-flat p-5" data-testid={`dashboard-watched-${p.id}`}>
+                <div className="flex items-start justify-between mb-2">
+                  <div className="min-w-0 flex-1">
+                    <div className="eyebrow">{p.builder}</div>
+                    <div className="font-serif text-xl mt-1 truncate">{p.name}</div>
+                  </div>
+                  <div className={`text-[10px] px-2 py-0.5 shrink-0 ${p.status === "Under construction" ? "bg-[hsl(var(--secondary))]/10 text-[hsl(var(--secondary))]" : "bg-[hsl(var(--muted))] text-muted-foreground"}`}>
+                    {p.status}
+                  </div>
+                </div>
+                <div className="flex items-center gap-1.5 text-xs text-muted-foreground mb-3">
+                  <MapPin size={11} /> {p.area} · {p.city}
+                </div>
+                <div className="grid grid-cols-2 gap-2 text-xs">
+                  <div>
+                    <div className="text-muted-foreground">Possession</div>
+                    <div className="flex items-center gap-1 mt-0.5"><Calendar size={10} /> {p.possession || "—"}</div>
+                  </div>
+                  <div>
+                    <div className="text-muted-foreground">Ticket from</div>
+                    <div className="num-metric mt-0.5">{p.price_from_inr ? inr(p.price_from_inr) : "—"}</div>
+                  </div>
+                </div>
+                {p.highlight && (
+                  <div className="text-xs text-muted-foreground italic border-l-2 border-[hsl(var(--secondary))] pl-3 mt-3 line-clamp-2">
+                    {p.highlight}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
 
       {/* Tools */}
       <section className="mt-16 grid md:grid-cols-2 gap-6">

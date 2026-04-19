@@ -18,6 +18,7 @@ import {
   Bug,
   Lightbulb,
   Heart,
+  UserPlus,
 } from "@phosphor-icons/react";
 
 export default function Admin() {
@@ -61,6 +62,31 @@ export default function Admin() {
     try {
       await api.post(`/admin/users/${id}/action`, { action, days });
       toast.success("Done");
+      load();
+    } catch (e) {
+      toast.error(formatApiErrorDetail(e.response?.data?.detail));
+    }
+  };
+
+  const legacyTransfer = async (srcUser) => {
+    const new_email = prompt(`Transfer ${srcUser.email}'s portfolio to next of kin. Enter new email:`);
+    if (!new_email) return;
+    const new_name = prompt("New user's full name:");
+    if (!new_name) return;
+    const note = prompt("Note (optional, e.g. 'Inherited from father'):", "") || "";
+    try {
+      const { data } = await api.post("/admin/legacy-transfer", {
+        from_user_id: srcUser.id,
+        new_email: new_email.trim().toLowerCase(),
+        new_name: new_name.trim(),
+        transfer_properties: true,
+        transfer_tenants: true,
+        note,
+      });
+      toast.success(
+        `Transferred: ${data.transferred.properties} properties, ${data.transferred.tenants} tenants · temp password: ${data.temp_password}`,
+        { duration: 15000 }
+      );
       load();
     } catch (e) {
       toast.error(formatApiErrorDetail(e.response?.data?.detail));
@@ -111,7 +137,7 @@ export default function Admin() {
       ) : tab === "overview" ? (
         <Overview stats={stats} />
       ) : tab === "users" ? (
-        <UsersTable users={users} currentUserId={user?.id} onAct={act} />
+        <UsersTable users={users} currentUserId={user?.id} onAct={act} onLegacyTransfer={legacyTransfer} />
       ) : tab === "feedback" ? (
         <FeedbackTable feedback={feedback} onRefresh={load} />
       ) : (
@@ -181,7 +207,7 @@ function StatCard({ label, big, rows, icon, testid }) {
   );
 }
 
-function UsersTable({ users, currentUserId, onAct }) {
+function UsersTable({ users, currentUserId, onAct, onLegacyTransfer }) {
   return (
     <div className="card-flat overflow-x-auto">
       <table className="w-full text-sm">
@@ -249,6 +275,14 @@ function UsersTable({ users, currentUserId, onAct }) {
                     data-testid={`admin-extend-trial-${u.id}`}
                   >
                     <Clock size={14} />
+                  </button>
+                  <button
+                    onClick={() => onLegacyTransfer(u)}
+                    className="btn-ghost p-1.5 text-xs"
+                    title="Transfer portfolio to next-of-kin (create legacy login)"
+                    data-testid={`admin-legacy-${u.id}`}
+                  >
+                    <UserPlus size={14} />
                   </button>
                 </div>
               </td>

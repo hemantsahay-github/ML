@@ -11,6 +11,7 @@ import {
   X,
   ArrowRight,
   CheckSquareOffset,
+  Star,
 } from "@phosphor-icons/react";
 
 const blankSubmit = {
@@ -36,6 +37,7 @@ export default function Projects() {
   const [status, setStatus] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [subForm, setSubForm] = useState(blankSubmit);
+  const [watchedIds, setWatchedIds] = useState(new Set());
 
   const load = async () => {
     setLoading(true);
@@ -44,9 +46,13 @@ export default function Projects() {
       if (city) params.push(`city=${encodeURIComponent(city)}`);
       if (area) params.push(`area=${encodeURIComponent(area)}`);
       if (status) params.push(`status=${encodeURIComponent(status)}`);
-      const { data } = await api.get(`/builder-projects${params.length ? `?${params.join("&")}` : ""}`);
-      setProjects(data.projects);
-      setCities(data.cities);
+      const [listRes, watchRes] = await Promise.all([
+        api.get(`/builder-projects${params.length ? `?${params.join("&")}` : ""}`),
+        api.get("/projects/watched").catch(() => ({ data: { projects: [] } })),
+      ]);
+      setProjects(listRes.data.projects);
+      setCities(listRes.data.cities);
+      setWatchedIds(new Set(watchRes.data.projects.map((p) => p.id)));
     } catch (e) {
       toast.error(formatApiErrorDetail(e.response?.data?.detail));
     } finally {
@@ -76,6 +82,23 @@ export default function Projects() {
       setSubmitting(false);
       setSubForm(blankSubmit);
       load();
+    } catch (e) {
+      toast.error(formatApiErrorDetail(e.response?.data?.detail));
+    }
+  };
+
+  const toggleWatch = async (p) => {
+    const isWatched = watchedIds.has(p.id);
+    try {
+      if (isWatched) {
+        await api.delete(`/projects/${p.id}/watch`);
+        setWatchedIds((s) => { const n = new Set(s); n.delete(p.id); return n; });
+        toast.success(`Removed ${p.name} from watchlist`);
+      } else {
+        await api.post(`/projects/${p.id}/watch`);
+        setWatchedIds((s) => { const n = new Set(s); n.add(p.id); return n; });
+        toast.success(`Watching ${p.name} — shows on your Dashboard`);
+      }
     } catch (e) {
       toast.error(formatApiErrorDetail(e.response?.data?.detail));
     }
@@ -153,7 +176,9 @@ export default function Projects() {
         </div>
       ) : (
         <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-6" data-testid="projects-grid">
-          {projects.map((p) => (
+          {projects.map((p) => {
+            const isWatched = watchedIds.has(p.id);
+            return (
             <div key={p.id} className="card-flat p-6 flex flex-col" data-testid={`project-${p.id}`}>
               <div className="flex items-start justify-between mb-3">
                 <div>
@@ -200,13 +225,26 @@ export default function Projects() {
                 </div>
               )}
               <div className="mt-auto pt-3 border-t hairline flex items-center justify-between text-[11px]">
-                <span className="text-muted-foreground truncate max-w-[60%]" title={p.rera_id}>
+                <span className="text-muted-foreground truncate max-w-[50%]" title={p.rera_id}>
                   {p.rera_id ? (<><CheckSquareOffset size={10} className="inline mr-1" />RERA: {p.rera_id}</>) : "RERA pending"}
                 </span>
-                {p.submitted_by && <span className="text-[hsl(var(--secondary))]">· community</span>}
+                <button
+                  onClick={() => toggleWatch(p)}
+                  className={`inline-flex items-center gap-1 px-2 py-1 text-[11px] transition ${
+                    isWatched
+                      ? "bg-[hsl(var(--secondary))]/15 text-[hsl(var(--secondary))] border border-[hsl(var(--secondary))]"
+                      : "text-muted-foreground hover:text-foreground border border-transparent"
+                  }`}
+                  data-testid={`watch-${p.id}`}
+                  title={isWatched ? "Remove from watchlist" : "Add to watchlist"}
+                >
+                  <Star size={11} weight={isWatched ? "fill" : "regular"} />
+                  {isWatched ? "Watching" : "Watch"}
+                </button>
               </div>
             </div>
-          ))}
+            );
+          })}
         </div>
       )}
 

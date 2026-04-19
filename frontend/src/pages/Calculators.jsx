@@ -3,6 +3,7 @@ import api, { formatApiErrorDetail } from "../lib/api";
 import { toast } from "sonner";
 import { inr, inrFull } from "../lib/format";
 import Disclaimer from "../components/Disclaimer";
+import { X } from "@phosphor-icons/react";
 import {
   LineChart,
   Line,
@@ -18,6 +19,7 @@ import {
 
 const tabs = [
   { id: "wealth", label: "Why buy (wealth)" },
+  { id: "car", label: "Car vs Property" },
   { id: "emi", label: "EMI" },
   { id: "rentbuy", label: "Rent vs Buy" },
   { id: "invest", label: "Property vs MF vs Equity" },
@@ -26,7 +28,10 @@ const tabs = [
   { id: "resale", label: "Resale estimator" },
   { id: "optimizer", label: "Loan optimizer" },
   { id: "builder", label: "Builder plan" },
+  { id: "uc", label: "UC expected value" },
+  { id: "rtmuc", label: "RTM vs UC breakeven" },
   { id: "prepay", label: "Prepay vs Invest" },
+  { id: "xirr", label: "XIRR" },
 ];
 
 export default function Calculators() {
@@ -60,6 +65,7 @@ export default function Calculators() {
       </div>
 
       {tab === "wealth" && <WealthNarrative />}
+      {tab === "car" && <CarVsProperty />}
       {tab === "emi" && <EmiCalc />}
       {tab === "rentbuy" && <RentBuyCalc />}
       {tab === "invest" && <InvestCalc />}
@@ -68,7 +74,10 @@ export default function Calculators() {
       {tab === "resale" && <ResaleEstimator />}
       {tab === "optimizer" && <LoanOptimizer />}
       {tab === "builder" && <BuilderPlan />}
+      {tab === "uc" && <UCProjection />}
+      {tab === "rtmuc" && <RtmVsUcBreakeven />}
       {tab === "prepay" && <PrepaymentAnalysis />}
+      {tab === "xirr" && <XirrCalc />}
 
       <Disclaimer />
     </div>
@@ -235,7 +244,7 @@ function ResaleEstimator() {
             <div className="grid md:grid-cols-3 gap-4">
               <Metric label="Projected sale (at appr.)" value={inr(res.projected_sale_price)} />
               <Metric label="Projected net in hand" value={inr(res.projected_net_in_hand)} />
-              <Metric label="Implied CAGR" value={`${res.implied_annual_return_pct}%`} />
+              <Metric label="XIRR (true IRR)" value={`${res.xirr_pct ?? res.implied_annual_return_pct}%`} />
             </div>
             <div className="card-flat p-6">
               <div className="eyebrow mb-3">Cost breakdown during hold</div>
@@ -1080,6 +1089,390 @@ function PrepaymentAnalysis() {
                   </div>
                 </div>
               ))}
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ---------------------- Car vs Property ---------------------- */
+function CarVsProperty() {
+  const [form, setForm] = useState({
+    amount: 1500000,
+    car_depreciation_pct: 15,
+    car_running_cost_monthly: 12000,
+    car_replace_years: 8,
+    dp_pct: 100,
+    loan_rate: 8.5,
+    loan_tenure_years: 20,
+    appreciation_pct: 7,
+    rental_yield_pct: 3,
+    years: 10,
+  });
+  const [res, setRes] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const run = async () => {
+    setLoading(true);
+    try {
+      const { data } = await api.post("/calc/car-vs-property", form);
+      setRes(data);
+    } catch (e) {
+      toast.error(formatApiErrorDetail(e.response?.data?.detail));
+    } finally {
+      setLoading(false);
+    }
+  };
+  return (
+    <div className="grid lg:grid-cols-[380px_1fr] gap-8">
+      <div className="card-flat p-6 space-y-2">
+        <NumberField label="Amount (₹)" value={form.amount} onChange={(v) => setForm({ ...form, amount: v })} />
+        <div className="eyebrow pt-3 pb-1 border-t hairline mt-3">Car assumptions</div>
+        <div className="grid grid-cols-2 gap-3">
+          <NumberField label="Depreciation %" value={form.car_depreciation_pct} step="0.5" onChange={(v) => setForm({ ...form, car_depreciation_pct: v })} />
+          <NumberField label="Replace every (yrs)" value={form.car_replace_years} onChange={(v) => setForm({ ...form, car_replace_years: v })} />
+        </div>
+        <NumberField label="Running cost ₹/mo" value={form.car_running_cost_monthly} onChange={(v) => setForm({ ...form, car_running_cost_monthly: v })} />
+        <div className="eyebrow pt-3 pb-1 border-t hairline mt-3">Property assumptions</div>
+        <div className="grid grid-cols-2 gap-3">
+          <NumberField label="DP %" value={form.dp_pct} onChange={(v) => setForm({ ...form, dp_pct: v })} />
+          <NumberField label="Appreciation %" value={form.appreciation_pct} step="0.1" onChange={(v) => setForm({ ...form, appreciation_pct: v })} />
+        </div>
+        <div className="grid grid-cols-2 gap-3">
+          <NumberField label="Rental yield %" value={form.rental_yield_pct} step="0.1" onChange={(v) => setForm({ ...form, rental_yield_pct: v })} />
+          <NumberField label="Horizon" value={form.years} onChange={(v) => setForm({ ...form, years: v })} />
+        </div>
+        <button onClick={run} disabled={loading} className="btn-primary w-full py-2.5 text-sm mt-3" data-testid="car-run-button">
+          {loading ? "Running…" : "Show the gap"}
+        </button>
+      </div>
+      <div>
+        {!res ? (
+          <div className="card-flat p-8 text-muted-foreground">
+            The same ₹ spent on a car vs real estate, side by side. Cars lose 15% a year + eat ₹12k/mo in fuel/insurance/service. Property appreciates 7% p.a. and yields rent. Watch the gap over 10 years.
+          </div>
+        ) : (
+          <div className="space-y-6" data-testid="car-result">
+            <div className={`card-flat p-8 ${res.winner === "Property" ? "border-[hsl(var(--secondary))]" : "border-destructive"}`}>
+              <div className="eyebrow mb-2">After {form.years} years</div>
+              <div className="font-serif text-5xl">{res.winner} wins.</div>
+              <div className="text-sm text-muted-foreground mt-3">Net worth gap: {inrFull(Math.abs(res.delta))}</div>
+            </div>
+            <div className="grid md:grid-cols-2 gap-4">
+              <Metric label="Car final net worth" value={inr(res.final_car_net_worth)} />
+              <Metric label="Property final net worth" value={inr(res.final_property_net_worth)} />
+            </div>
+            <div className="card-flat p-6">
+              <div className="eyebrow mb-4">Trajectory</div>
+              <div style={{ width: "100%", height: 320 }}>
+                <ResponsiveContainer>
+                  <LineChart data={res.series}>
+                    <CartesianGrid stroke="hsl(var(--border))" strokeDasharray="2 4" />
+                    <XAxis dataKey="year" stroke="hsl(var(--muted-foreground))" />
+                    <YAxis stroke="hsl(var(--muted-foreground))" tickFormatter={(v) => inr(v)} />
+                    <Tooltip formatter={(v) => inrFull(v)} />
+                    <Legend />
+                    <Line type="monotone" name="Property net worth" dataKey="property_net_worth" stroke="#C85A32" strokeWidth={2.5} dot={false} />
+                    <Line type="monotone" name="Car net worth" dataKey="car_net_worth" stroke="#4A5568" strokeWidth={2.5} dot={false} />
+                  </LineChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+            <div className="card-flat p-6">
+              <div className="eyebrow mb-3">Why property wins here</div>
+              <ul className="space-y-2 text-sm leading-relaxed">
+                {res.narrative.map((n, i) => (
+                  <li key={i} className="flex gap-3" data-testid={`car-narrative-${i}`}>
+                    <span className="text-[hsl(var(--secondary))]">▪</span>
+                    <span className="text-muted-foreground">{n}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ---------------------- UC Projection ---------------------- */
+function UCProjection() {
+  const [form, setForm] = useState({
+    purchase_price: 8000000,
+    down_payment_pct: 20,
+    loan_rate: 8.5,
+    loan_tenure_years: 20,
+    possession_months: 36,
+    area_price_inflation_pct: 7,
+    construction_cost_inflation_pct: 6,
+    post_possession_boost_pct: 5,
+    disbursement_schedule: "clp",
+  });
+  const [res, setRes] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const run = async () => {
+    setLoading(true);
+    try {
+      const { data } = await api.post("/calc/uc-projection", form);
+      setRes(data);
+    } catch (e) {
+      toast.error(formatApiErrorDetail(e.response?.data?.detail));
+    } finally {
+      setLoading(false);
+    }
+  };
+  return (
+    <div className="grid lg:grid-cols-[380px_1fr] gap-8">
+      <div className="card-flat p-6 space-y-2">
+        <NumberField label="Purchase price today (₹)" value={form.purchase_price} onChange={(v) => setForm({ ...form, purchase_price: v })} />
+        <div className="grid grid-cols-2 gap-3">
+          <NumberField label="DP %" value={form.down_payment_pct} onChange={(v) => setForm({ ...form, down_payment_pct: v })} />
+          <NumberField label="Loan %" value={form.loan_rate} step="0.1" onChange={(v) => setForm({ ...form, loan_rate: v })} />
+        </div>
+        <div className="grid grid-cols-2 gap-3">
+          <NumberField label="Possession (months)" value={form.possession_months} onChange={(v) => setForm({ ...form, possession_months: v })} />
+          <NumberField label="Tenure (years)" value={form.loan_tenure_years} onChange={(v) => setForm({ ...form, loan_tenure_years: v })} />
+        </div>
+        <NumberField label="Area price inflation % p.a." value={form.area_price_inflation_pct} step="0.1" onChange={(v) => setForm({ ...form, area_price_inflation_pct: v })} />
+        <NumberField label="Construction cost inflation %" value={form.construction_cost_inflation_pct} step="0.1" onChange={(v) => setForm({ ...form, construction_cost_inflation_pct: v })} />
+        <NumberField label="Post-possession boost %" value={form.post_possession_boost_pct} step="0.5" onChange={(v) => setForm({ ...form, post_possession_boost_pct: v })} />
+        <label className="block">
+          <span className="eyebrow block mb-1.5">Disbursement schedule</span>
+          <select className="input-dark w-full px-3 py-2" value={form.disbursement_schedule} onChange={(e) => setForm({ ...form, disbursement_schedule: e.target.value })}>
+            <option value="clp">CLP (construction-linked)</option>
+            <option value="linear">Linear ramp</option>
+          </select>
+        </label>
+        <button onClick={run} disabled={loading} className="btn-primary w-full py-2.5 text-sm mt-3" data-testid="uc-run-button">
+          {loading ? "Projecting…" : "Project possession value"}
+        </button>
+      </div>
+      <div>
+        {!res ? (
+          <div className="card-flat p-8 text-muted-foreground">
+            Bought under-construction? Model what the flat will actually be worth on possession day — net of pre-EMI bleed, cost escalations, and the ready-to-move premium. The real acquisition cost is almost always higher than the brochure price.
+          </div>
+        ) : (
+          <div className="space-y-6" data-testid="uc-result">
+            <div className="grid md:grid-cols-3 gap-4">
+              <Metric label="Expected possession value" value={inrFull(res.expected_possession_value)} />
+              <Metric label="Effective acquisition cost" value={inrFull(res.effective_acquisition_cost)} />
+              <Metric label="Paper profit at possession" value={inrFull(res.projected_profit_at_possession)} />
+            </div>
+            <div className="grid md:grid-cols-3 gap-4">
+              <Metric label="Pre-EMI total" value={inr(res.pre_emi_total)} />
+              <Metric label="Construction-cost escalation" value={inr(res.construction_cost_escalation)} />
+              <Metric label="Annualized ROI on DP" value={`${res.annualized_roi_on_dp_pct}%`} />
+            </div>
+            <div className="card-flat p-6">
+              <div className="eyebrow mb-4">Month-by-month disbursement</div>
+              <div style={{ width: "100%", height: 260 }}>
+                <ResponsiveContainer>
+                  <AreaChart data={res.disbursement_schedule}>
+                    <CartesianGrid stroke="hsl(var(--border))" strokeDasharray="2 4" />
+                    <XAxis dataKey="month" stroke="hsl(var(--muted-foreground))" />
+                    <YAxis stroke="hsl(var(--muted-foreground))" tickFormatter={(v) => inr(v)} />
+                    <Tooltip formatter={(v) => inrFull(v)} />
+                    <Legend />
+                    <Area type="monotone" name="Disbursed (cumul.)" dataKey="disbursed" stroke="#C85A32" fill="#C85A32" fillOpacity={0.15} />
+                    <Area type="monotone" name="Pre-EMI ₹/mo" dataKey="pre_emi_monthly" stroke="#B89B72" fill="#B89B72" fillOpacity={0.2} />
+                  </AreaChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+            <div className="card-flat p-6">
+              <div className="eyebrow mb-3">What this means</div>
+              <ul className="space-y-2 text-sm leading-relaxed">
+                {res.narrative.map((n, i) => (
+                  <li key={i} className="flex gap-3" data-testid={`uc-narrative-${i}`}>
+                    <span className="text-[hsl(var(--secondary))]">▪</span>
+                    <span className="text-muted-foreground">{n}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ---------------------- RTM vs UC Breakeven ---------------------- */
+function RtmVsUcBreakeven() {
+  const [form, setForm] = useState({
+    rtm_price: 9500000,
+    uc_price: 8500000,
+    possession_months: 36,
+    loan_rate: 8.5,
+    loan_tenure_years: 20,
+    monthly_rent_rtm: 32000,
+    expected_rent_at_possession_uc: 38000,
+    area_appreciation_pct: 7,
+    maintenance_monthly: 3000,
+    property_tax_yearly: 15000,
+  });
+  const [res, setRes] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const run = async () => {
+    setLoading(true);
+    try {
+      const { data } = await api.post("/calc/breakeven-rtm-uc", form);
+      setRes(data);
+    } catch (e) {
+      toast.error(formatApiErrorDetail(e.response?.data?.detail));
+    } finally {
+      setLoading(false);
+    }
+  };
+  return (
+    <div className="grid lg:grid-cols-[380px_1fr] gap-8">
+      <div className="card-flat p-6 space-y-2">
+        <div className="eyebrow pb-1">Ready-to-move (RTM)</div>
+        <NumberField label="RTM price (₹)" value={form.rtm_price} onChange={(v) => setForm({ ...form, rtm_price: v })} />
+        <NumberField label="RTM rent ₹/mo (today)" value={form.monthly_rent_rtm} onChange={(v) => setForm({ ...form, monthly_rent_rtm: v })} />
+        <div className="eyebrow pt-3 pb-1 border-t hairline mt-3">Under-construction (UC)</div>
+        <NumberField label="UC price (₹)" value={form.uc_price} onChange={(v) => setForm({ ...form, uc_price: v })} />
+        <NumberField label="Rent at possession ₹/mo" value={form.expected_rent_at_possession_uc} onChange={(v) => setForm({ ...form, expected_rent_at_possession_uc: v })} />
+        <NumberField label="Possession months" value={form.possession_months} onChange={(v) => setForm({ ...form, possession_months: v })} />
+        <div className="eyebrow pt-3 pb-1 border-t hairline mt-3">Common</div>
+        <div className="grid grid-cols-2 gap-3">
+          <NumberField label="Loan %" value={form.loan_rate} step="0.1" onChange={(v) => setForm({ ...form, loan_rate: v })} />
+          <NumberField label="Tenure" value={form.loan_tenure_years} onChange={(v) => setForm({ ...form, loan_tenure_years: v })} />
+        </div>
+        <div className="grid grid-cols-2 gap-3">
+          <NumberField label="Maint / mo" value={form.maintenance_monthly} onChange={(v) => setForm({ ...form, maintenance_monthly: v })} />
+          <NumberField label="Appreciation %" value={form.area_appreciation_pct} step="0.1" onChange={(v) => setForm({ ...form, area_appreciation_pct: v })} />
+        </div>
+        <NumberField label="Property tax / year" value={form.property_tax_yearly} onChange={(v) => setForm({ ...form, property_tax_yearly: v })} />
+        <button onClick={run} disabled={loading} className="btn-primary w-full py-2.5 text-sm mt-3" data-testid="rtmuc-run-button">
+          {loading ? "Finding breakeven…" : "Find breakeven DP"}
+        </button>
+      </div>
+      <div>
+        {!res ? (
+          <div className="card-flat p-8 text-muted-foreground">
+            For each option, Estima finds the minimum down-payment such that rent exactly covers EMI + costs. Compare how much you&apos;d pay now vs how much per month over 5 years — so you can decide per-month loan and deposit.
+          </div>
+        ) : (
+          <div className="space-y-6" data-testid="rtmuc-result">
+            {res.winner && (
+              <div className={`card-flat p-8 border-[hsl(var(--secondary))]`}>
+                <div className="eyebrow mb-2">Net winner over 5 years</div>
+                <div className="font-serif text-5xl">{res.winner === "UC" ? "Under-construction" : "Ready-to-move"} wins.</div>
+              </div>
+            )}
+            <div className="grid md:grid-cols-2 gap-4">
+              <div className="card-flat p-6" data-testid="rtmuc-rtm-card">
+                <div className="eyebrow mb-3">Ready-to-move</div>
+                {res.rtm.feasible ? (
+                  <div className="space-y-2 text-sm">
+                    <Row label="Breakeven DP" v={`${res.rtm.dp_pct}% · ${inr(res.rtm.dp_amount)}`} />
+                    <Row label="Loan" v={inr(res.rtm.loan)} />
+                    <Row label="EMI" v={inr(res.rtm.emi)} />
+                    <Row label="Cashflow" v={`+${inr(res.rtm.cashflow)}`} accent="good" />
+                    <Row label="Value at 5y" v={inr(res.rtm.value_at_5y_horizon)} />
+                    <Row label="Appreciation gain" v={inr(res.rtm.appreciation_gain)} accent="good" />
+                    <Row label="5y carrying cost" v={inr(res.rtm["5y_carrying_cost"] || 0)} accent={(res.rtm["5y_carrying_cost"] || 0) > 0 ? "bad" : "good"} />
+                  </div>
+                ) : (
+                  <div className="text-sm text-destructive">Not feasible — rent too low vs EMI+costs.</div>
+                )}
+              </div>
+              <div className="card-flat p-6" data-testid="rtmuc-uc-card">
+                <div className="eyebrow mb-3">Under-construction</div>
+                {res.uc.feasible ? (
+                  <div className="space-y-2 text-sm">
+                    <Row label="Breakeven DP" v={`${res.uc.dp_pct}% · ${inr(res.uc.dp_amount)}`} />
+                    <Row label="Loan" v={inr(res.uc.loan)} />
+                    <Row label="EMI" v={inr(res.uc.emi)} />
+                    <Row label="Cashflow (post-possession)" v={`+${inr(res.uc.cashflow)}`} accent="good" />
+                    <Row label="Value at possession" v={inr(res.uc.value_at_possession)} />
+                    <Row label="Appreciation gain" v={inr(res.uc.appreciation_gain_at_possession)} accent="good" />
+                    <Row label="5y carry incl. pre-EMI" v={inr(res.uc["5y_carrying_cost_incl_pre_emi"] || 0)} accent={(res.uc["5y_carrying_cost_incl_pre_emi"] || 0) > 0 ? "bad" : "good"} />
+                    <Row label="Possession in" v={`${res.uc.possession_months} months`} />
+                  </div>
+                ) : (
+                  <div className="text-sm text-destructive">Not feasible — expected rent too low.</div>
+                )}
+              </div>
+            </div>
+            <div className="card-flat p-6">
+              <div className="eyebrow mb-3">Bottom line</div>
+              <ul className="space-y-2 text-sm leading-relaxed">
+                {res.narrative.map((n, i) => (
+                  <li key={i} className="flex gap-3" data-testid={`rtmuc-narrative-${i}`}>
+                    <span className="text-[hsl(var(--secondary))]">▪</span>
+                    <span className="text-muted-foreground">{n}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ---------------------- XIRR ---------------------- */
+function XirrCalc() {
+  const [rows, setRows] = useState([
+    { date: "2020-06-01", amount: -2000000 },
+    { date: "2022-06-01", amount: 180000 },
+    { date: "2024-06-01", amount: 200000 },
+    { date: new Date().toISOString().slice(0, 10), amount: 3500000 },
+  ]);
+  const [res, setRes] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const add = () => setRows([...rows, { date: new Date().toISOString().slice(0, 10), amount: 0 }]);
+  const del = (i) => setRows(rows.filter((_, j) => j !== i));
+  const update = (i, k, v) => setRows(rows.map((r, j) => (j === i ? { ...r, [k]: v } : r)));
+  const run = async () => {
+    setLoading(true);
+    try {
+      const { data } = await api.post("/calc/xirr", { cashflows: rows.map((r) => ({ date: r.date, amount: Number(r.amount) })) });
+      setRes(data);
+    } catch (e) {
+      toast.error(formatApiErrorDetail(e.response?.data?.detail));
+    } finally {
+      setLoading(false);
+    }
+  };
+  return (
+    <div className="grid lg:grid-cols-[500px_1fr] gap-8">
+      <div className="card-flat p-6">
+        <div className="eyebrow mb-3">Cashflows (outflow = negative)</div>
+        <div className="space-y-2">
+          {rows.map((r, i) => (
+            <div key={i} className="flex gap-2 items-center" data-testid={`xirr-row-${i}`}>
+              <input type="date" className="input-dark px-2 py-1.5 text-sm flex-1" value={r.date} onChange={(e) => update(i, "date", e.target.value)} />
+              <input type="number" className="input-dark px-2 py-1.5 text-sm flex-1" value={r.amount} onChange={(e) => update(i, "amount", e.target.value)} />
+              <button onClick={() => del(i)} className="btn-ghost p-1.5" title="Remove"><X size={12} /></button>
+            </div>
+          ))}
+        </div>
+        <button onClick={add} className="btn-ghost text-xs mt-3 px-3 py-2" data-testid="xirr-add">+ Add cashflow</button>
+        <button onClick={run} disabled={loading} className="btn-primary w-full py-2.5 text-sm mt-4" data-testid="xirr-run-button">
+          {loading ? "Computing…" : "Compute XIRR"}
+        </button>
+        <p className="text-xs text-muted-foreground mt-4">
+          XIRR is the annualized return that makes the net-present-value of irregular cashflows equal zero. The correct way to measure real-estate IRR (rent + resale + misc spends over time).
+        </p>
+      </div>
+      <div>
+        {!res ? (
+          <div className="card-flat p-8 text-muted-foreground">
+            Enter your real-estate cashflows: down payment + EMIs + rent received + final sale. The XIRR is your true annualized return — directly comparable to equity/MF CAGR.
+          </div>
+        ) : (
+          <div className="space-y-6" data-testid="xirr-result">
+            <div className="card-flat p-8 border-[hsl(var(--secondary))]">
+              <div className="eyebrow mb-2">Your XIRR</div>
+              <div className="num-metric text-6xl text-[hsl(var(--secondary))]">{res.xirr_pct}%</div>
+              <div className="text-sm text-muted-foreground mt-3">Across {res.n_flows} cashflows. Compare against Nifty ~13%, MF ~11%, FD ~7%.</div>
             </div>
           </div>
         )}

@@ -1,0 +1,71 @@
+{
+  "summary": "Iteration-9 testing complete — all 7 new capabilities pass. Backend pytest 13/13 green (watchlist, xirr, resale xirr_pct, car-vs-property, uc-projection, breakeven-rtm-uc, tenant invite+login+me+receipts+razorpay-verify-rejects-bad-sig, admin legacy-transfer + admin-only gate). Frontend Playwright verified: 14/14 calculator tabs render & run, resale result shows 'XIRR (true IRR)' card, Projects watch toggle works ('Watching'), Dashboard 'Projects you're tracking' section appears after watching, Tenants page has 'Invite to tenant portal' button, Admin Users tab shows 34 UserPlus legacy-transfer icon buttons (title contains 'legacy'), /tenant route correctly redirects non-tenant (admin) away.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Calculators (Car vs Property, UC Projection, RTM vs UC, Wealth, Rent-for-cashflow)", "issues": ["Recharts 'width(-1) height(-1)' console warning persists on first chart mount (carried over from iteration-8). Cosmetic only — charts render correctly. Fix: wrap ResponsiveContainer in a parent with explicit height (e.g. h-[280px])."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration9.py",
+    "/app/test_reports/pytest/iteration9_results.xml"
+  ],
+  "action_items": [
+    "Optional (carry-over from it-8): set explicit min-height on Recharts ResponsiveContainer parents to suppress width(-1) warning.",
+    "Cleanup: test run created ~30+ TEST_ prefixed users (tenants + legacy source/heir pairs) and a handful of TEST_PROP_IT9_* properties in DB. Consider a periodic admin cleanup of users with email starting 'test_tenant_it9_', 'test_legacy_src_', 'test_legacy_heir_', 'test_nonadmin_' and properties named 'TEST_PROP_IT9_*'."
+  ],
+  "critical_code_review_comments": [
+    "server.py is now 3607 lines — strongly recommend splitting into routers (calc.py, tenant.py, admin.py, projects.py). Guideline is <700 lines.",
+    "/api/tenant/pay/verify correctly HMAC-checks razorpay_signature and returns 400 on mismatch — verified.",
+    "/api/admin/legacy-transfer sets role='legacy_archived' on source user. Ensure auth middleware allows 'legacy_archived' users to still login read-only — currently login succeeds (verified in test).",
+    "Watchlist: /projects/{id}/watch upsert is idempotent; DELETE returns ok even if nothing deleted — good.",
+    "Tenant invite re-invite with new password correctly updates password_hash (idempotent) — verified via two back-to-back invite calls.",
+    "/tenant/me + /tenant/receipts + /tenant/pay/* all enforce _require_tenant — verified (403 for admin).",
+    "XIRR Newton-Raphson converges in tests; has bisection fallback — good. Early-returns 0 when no sign change in cashflows."
+  ],
+  "updated_files": ["/app/backend/tests/test_iteration9.py (new, 13 tests)"],
+  "success_rate": {"backend": "100% (13/13)", "frontend": "100% on tested flows"},
+  "test_credentials": "admin@estima.com / Admin@123 (used for admin + legacy-transfer). Tenant users created on-the-fly with TenantPass@123. Heir users created on-the-fly with Heir@12345.",
+  "seed_data_creation": "Each test-run creates: 1 property (TEST_PROP_IT9_*), 1 tenant (test_tenant_it9_*@estima.com), 1 tenant portal user, 1 source user (test_legacy_src_*@estima.com), 1 heir user (test_legacy_heir_*@estima.com), 1 non-admin user (test_nonadmin_*@estima.com). A watched project is also added/removed idempotently. No production data touched.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Iteration 9 fully verified: XIRR endpoint returns correct ~9.85% for test cashflow, resale-estimate includes xirr_pct, car-vs-property/uc-projection/breakeven-rtm-uc all return expected shapes with narratives. Tenant portal flow: invite creates user with role='tenant' (re-invite updates pw idempotently), login returns role='tenant' at top-level of response (NOT nested under 'user'), /tenant/me returns {user, tenant}, /tenant/receipts returns list, /tenant/pay/create-order works (razor test mode configured), /tenant/pay/verify rejects bad signatures with 400. Admin legacy-transfer creates new user+migrates properties/tenants/receipts/shares, archives source as role='legacy_archived'. Frontend: login response fields are flat (id/email/role/is_pro/plan) — do NOT assume nested user. Dashboard lives at /app (not /app/dashboard). Admin legacy button is on Users tab with title containing 'legacy'. /tenant route redirects non-tenant users to /app.",
+  "backend_test_summary": {
+    "total": 13,
+    "passed": 13,
+    "failed": 0,
+    "coverage": [
+      "POST /api/projects/{id}/watch (idempotent)",
+      "DELETE /api/projects/{id}/watch (idempotent)",
+      "GET /api/projects/watched (resolves curated ids + watched_at)",
+      "POST /api/calc/xirr (1M->1.6M in 5y ~= 9.85%)",
+      "POST /api/calc/xirr (no sign change => 0)",
+      "POST /api/calc/resale-estimate (xirr_pct field present)",
+      "POST /api/calc/car-vs-property (winner/delta/series=years/narrative)",
+      "POST /api/calc/uc-projection (possession value, effective cost, 36-month schedule)",
+      "POST /api/calc/breakeven-rtm-uc (rtm + uc feasibility + winner)",
+      "POST /api/tenants/{id}/invite (first invite + re-invite idempotent)",
+      "Tenant login returns role='tenant'; /tenant/me + /tenant/receipts",
+      "/tenant/me 403 for non-tenant; /tenant/pay/verify 400 on bad signature",
+      "POST /api/admin/legacy-transfer (creates heir, archives source, role-gated)"
+    ]
+  },
+  "frontend_test_summary": {
+    "verified_flows": [
+      "Admin login + tour-skip",
+      "Projects page → Watch toggle → label flips to 'Watching'",
+      "Dashboard (/app) → 'Projects you're tracking' widget visible with watched project cards",
+      "Calculators → 14 tabs present: wealth, car, emi, rentbuy, invest, cashflow, rentcf, resale, optimizer, builder, uc, rtmuc, prepay, xirr",
+      "Calculators → XIRR run → result shown",
+      "Calculators → Car vs Property run → result shown",
+      "Calculators → UC Projection run → result shown",
+      "Calculators → RTM vs UC breakeven run → result shown",
+      "Calculators → Resale result contains 'XIRR (true IRR)' metric",
+      "Tenants page → 'Invite to tenant portal' button present",
+      "Admin page → Users tab → 34 UserPlus legacy-transfer buttons (title contains 'legacy')",
+      "/tenant for non-tenant (admin) → redirected to /app (tenant-dashboard not shown)"
+    ]
+  }
+}

@@ -1455,6 +1455,17 @@ async def resale_estimate(body: ResaleEstimateRequest):
         if projected_net_after_carry > 0:
             implied_annual_return = ((projected_net_after_carry / capital_invested) ** (1 / years) - 1) * 100 if capital_invested > 0 else 0
 
+    # True XIRR using cashflows: -dp at t0, periodic rent - costs, +projected_np at exit
+    dp_initial = max(P - loan, 0)
+    cfs = [(0, -dp_initial - body.misc_expenses_inr)]
+    for y in range(1, int(years) + 1):
+        cfs.append((y * 365, (avg_rent - monthly_costs) * 12))
+    cfs.append((int(years * 365), projected_np))
+    try:
+        xirr_rate = _xirr(cfs) * 100
+    except Exception:
+        xirr_rate = 0.0
+
     return {
         "projected_sale_price": round(projected_value, 2),
         "projected_gross_proceeds": round(projected_value * (1 - b), 2),
@@ -1468,6 +1479,7 @@ async def resale_estimate(body: ResaleEstimateRequest):
         "total_rental_income": round(total_rent, 2),
         "net_carrying_cost": round(net_carry, 2),
         "implied_annual_return_pct": round(implied_annual_return, 2),
+        "xirr_pct": round(xirr_rate, 2),
         "assumptions": {
             "broker_fee_pct": body.broker_fee_pct,
             "ltcg_pct": body.ltcg_pct,
@@ -2857,6 +2869,653 @@ async def submit_community_project(body: CommunityProjectIn, user: dict = Depend
     await db.community_projects.insert_one(doc.copy())
     doc.pop("_id", None)
     return doc
+
+
+# ------------------------------------------------------------
+# XIRR — proper IRR for uneven cashflows
+# ------------------------------------------------------------
+def _xnpv(rate, cashflows):
+    """cashflows: list of (days_from_t0, amount)."""
+    if rate <= -1:
+        return float("inf")
+    return sum(amt / ((1 + rate) ** (d / 365.0)) for d, amt in cashflows)
+
+
+def _xirr(cashflows, guess=0.1):
+    """Newton-Raphson XIRR for list of (days_offset, amount). Returns annual rate."""
+    if not cashflows or len(cashflows) < 2:
+        return 0.0
+    has_pos = any(a > 0 for _, a in cashflows)
+    has_neg = any(a < 0 for _, a in cashflows)
+    if not (has_pos and has_neg):
+        return 0.0
+    rate = guess
+    for _ in range(120):
+        npv = _xnpv(rate, cashflows)
+        if abs(npv) < 1e-4:
+            return rate
+        # derivative
+        dnpv = sum(-(d / 365.0) * amt / ((1 + rate) ** (d / 365.0 + 1)) for d, amt in cashflows)
+        if dnpv == 0:
+            break
+        new_rate = rate - npv / dnpv
+        if new_rate <= -0.999:
+            new_rate = -0.999
+        if abs(new_rate - rate) < 1e-7:
+            return new_rate
+        rate = new_rate
+    # bisection fallback
+    lo, hi = -0.9, 5.0
+    for _ in range(200):
+        mid = (lo + hi) / 2
+        if _xnpv(mid, cashflows) * _xnpv(lo, cashflows) < 0:
+            hi = mid
+        else:
+            lo = mid
+        if abs(hi - lo) < 1e-6:
+            return mid
+    return rate
+
+
+class XirrRequest(BaseModel):
+    cashflows: List[dict]   # [{"date": "2020-01-15", "amount": -500000}, ...]
+
+
+@api_router.post("/calc/xirr")
+async def xirr_endpoint(body: XirrRequest):
+    try:
+        cfs = []
+        t0 = None
+        for cf in body.cashflows:
+            d = datetime.fromisoformat(cf["date"])
+            if t0 is None:
+                t0 = d
+            cfs.append(((d - t0).days, float(cf["amount"])))
+        cfs.sort(key=lambda x: x[0])
+        rate = _xirr(cfs)
+        return {"xirr_pct": round(rate * 100, 3), "n_flows": len(cfs)}
+    except Exception as e:
+        raise HTTPException(400, f"Bad cashflows: {e}")
+
+
+# ------------------------------------------------------------
+# Car vs Property — depreciating asset vs appreciating
+# ------------------------------------------------------------
+class CarVsPropertyRequest(BaseModel):
+    amount: float = 1500000
+    # car
+    car_depreciation_pct: float = 15.0       # per year (first-year is higher in reality; simplification)
+    car_running_cost_monthly: float = 12000   # fuel + insurance + maintenance
+    car_replace_years: int = 8                # user replaces car every N years
+    # property (down payment scenario)
+    dp_pct: float = 100.0                     # if 100 = outright purchase
+    loan_rate: float = 8.5
+    loan_tenure_years: int = 20
+    appreciation_pct: float = 7.0
+    rental_yield_pct: float = 3.0             # annual rental income as % of property value
+    years: int = 10
+
+
+@api_router.post("/calc/car-vs-property")
+async def car_vs_property(body: CarVsPropertyRequest):
+    """Spend the same ₹ on a depreciating asset (car) vs appreciating one (property).
+    Car depreciates + running cost + periodic replacement; property appreciates + yields rent.
+    Returns year-by-year net worth trajectories and the gap at year N.
+    """
+    # Car journey
+    car_series = []
+    car_value = body.amount
+    cum_running = 0
+    replacements = 0
+    for y in range(1, body.years + 1):
+        # depreciation
+        car_value *= (1 - body.car_depreciation_pct / 100)
+        if y % max(body.car_replace_years, 1) == 0 and y < body.years:
+            # replace: scrap old (get 10% of current), buy new at same amount
+            scrap = car_value * 0.1
+            car_value = body.amount - scrap  # treat new outlay as cost = amount - scrap
+            replacements += 1
+        cum_running += body.car_running_cost_monthly * 12
+        car_net = car_value - cum_running - replacements * body.amount * 0.8  # replacement cash out approx
+        car_series.append({
+            "year": y,
+            "car_net_worth": round(car_net, 2),
+            "car_value": round(car_value, 2),
+            "cumulative_running_cost": round(cum_running, 2),
+        })
+
+    # Property journey — dp of body.amount (if dp_pct = 100) else leveraged
+    dp_amount = body.amount
+    property_price = dp_amount / (body.dp_pct / 100) if body.dp_pct > 0 else dp_amount
+    loan = property_price - dp_amount
+    emi = _emi(loan, body.loan_rate, body.loan_tenure_years) if loan > 0 else 0
+    prop_series = []
+    cum_rent = 0
+    cum_emi = 0
+    for y in range(1, body.years + 1):
+        prop_value = property_price * ((1 + body.appreciation_pct / 100) ** y)
+        year_rent = prop_value * (body.rental_yield_pct / 100)
+        cum_rent += year_rent
+        year_emi = emi * 12 if y * 12 <= body.loan_tenure_years * 12 else 0
+        cum_emi += year_emi
+        out_loan = _loan_balance(loan, body.loan_rate, body.loan_tenure_years, min(y * 12, body.loan_tenure_years * 12))
+        prop_net = prop_value - out_loan + cum_rent - cum_emi
+        prop_series.append({
+            "year": y,
+            "property_net_worth": round(prop_net, 2),
+            "property_value": round(prop_value, 2),
+            "cumulative_rent": round(cum_rent, 2),
+            "outstanding_loan": round(out_loan, 2),
+        })
+
+    # Merge series by year
+    series = [
+        {**c, **p}
+        for c, p in zip(car_series, prop_series)
+    ]
+    final_car = car_series[-1]["car_net_worth"]
+    final_prop = prop_series[-1]["property_net_worth"]
+    delta = final_prop - final_car
+
+    return {
+        "inputs": body.model_dump(),
+        "series": series,
+        "final_car_net_worth": round(final_car, 2),
+        "final_property_net_worth": round(final_prop, 2),
+        "delta": round(delta, 2),
+        "winner": "Property" if delta > 0 else "Car",
+        "replacements_over_horizon": replacements,
+        "narrative": [
+            f"A ₹{int(body.amount):,} car loses ~{body.car_depreciation_pct}% of its value every year. After {body.years} years, it is worth ₹{int(car_series[-1]['car_value']):,}.",
+            f"Running costs (fuel + insurance + maintenance) total ₹{int(car_series[-1]['cumulative_running_cost']):,} over {body.years} years — money that never comes back.",
+            f"The same ₹{int(body.amount):,} as property down-payment controls a ₹{int(property_price):,} asset that compounds at ~{body.appreciation_pct}% p.a. — that's the leverage of real estate.",
+            f"Rental yield ({body.rental_yield_pct}%) produces ~₹{int(prop_series[-1]['cumulative_rent']):,} over the horizon. EMIs paid: ₹{int(cum_emi):,}.",
+            f"Net worth gap at year {body.years}: ₹{int(abs(delta)):,} in favour of {'property' if delta > 0 else 'car'}.",
+        ],
+    }
+
+
+# ------------------------------------------------------------
+# Under-construction projected possession value
+# ------------------------------------------------------------
+class UCProjectionRequest(BaseModel):
+    purchase_price: float = 8000000
+    down_payment_pct: float = 20
+    loan_rate: float = 8.5
+    loan_tenure_years: int = 20
+    possession_months: int = 36
+    area_price_inflation_pct: float = 7.0      # annual
+    construction_cost_inflation_pct: float = 6.0  # annual — extras charged near possession
+    post_possession_boost_pct: float = 5.0      # ready-to-move premium
+    disbursement_schedule: Literal["clp", "linear"] = "clp"
+
+
+@api_router.post("/calc/uc-projection")
+async def uc_projection(body: UCProjectionRequest):
+    """Projected property value + true effective cost at possession for an under-construction buy."""
+    years = body.possession_months / 12.0
+    dp = body.purchase_price * body.down_payment_pct / 100
+    loan = body.purchase_price - dp
+    r_m = (body.loan_rate / 100) / 12
+
+    # Pre-EMI: interest-only on average disbursed amount till possession
+    avg_frac = 0.5   # linear or CLP average (simplified)
+    pre_emi_monthly = (loan * avg_frac) * r_m if loan > 0 else 0
+    pre_emi_total = pre_emi_monthly * body.possession_months
+
+    # "Extra" construction cost escalation borne by buyer near possession (GST/registration/amenities)
+    escalation = body.purchase_price * (((1 + body.construction_cost_inflation_pct / 100) ** years) - 1) * 0.3  # ~30% of cost inflation typically passed
+
+    effective_acquisition = body.purchase_price + pre_emi_total + escalation
+
+    # Expected possession-day value = appreciation on area price + post-possession boost
+    appreciation = body.purchase_price * (((1 + body.area_price_inflation_pct / 100) ** years) - 1)
+    possession_value = body.purchase_price * ((1 + body.area_price_inflation_pct / 100) ** years) * (1 + body.post_possession_boost_pct / 100)
+
+    # Monthly schedule (simple linear/clp disbursement & corresponding pre-EMI)
+    schedule = []
+    for m in range(1, body.possession_months + 1):
+        if body.disbursement_schedule == "linear":
+            disbursed_frac = m / body.possession_months
+        else:
+            # CLP: 20%, 20% at 30%, 20% at 60%, 20% at 80%, 20% at handover (100%)
+            milestones = [(0.0, 0.20), (0.30, 0.40), (0.60, 0.60), (0.80, 0.80), (1.00, 1.00)]
+            pos = m / body.possession_months
+            disbursed_frac = 0
+            for p, frac in milestones:
+                if pos >= p:
+                    disbursed_frac = frac
+        disbursed = loan * disbursed_frac
+        pre_emi_m = disbursed * r_m
+        schedule.append({
+            "month": m,
+            "disbursed": round(disbursed, 2),
+            "pre_emi_monthly": round(pre_emi_m, 2),
+            "cumulative_disbursed_pct": round(disbursed_frac * 100, 1),
+        })
+
+    profit = possession_value - effective_acquisition
+    roi = (profit / dp * 100) / years if dp > 0 and years > 0 else 0
+
+    return {
+        "inputs": body.model_dump(),
+        "down_payment": round(dp, 2),
+        "loan": round(loan, 2),
+        "pre_emi_monthly_avg": round(pre_emi_monthly, 2),
+        "pre_emi_total": round(pre_emi_total, 2),
+        "construction_cost_escalation": round(escalation, 2),
+        "effective_acquisition_cost": round(effective_acquisition, 2),
+        "appreciation_gain": round(appreciation, 2),
+        "expected_possession_value": round(possession_value, 2),
+        "projected_profit_at_possession": round(profit, 2),
+        "annualized_roi_on_dp_pct": round(roi, 2),
+        "disbursement_schedule": schedule,
+        "narrative": [
+            f"Today's price ₹{int(body.purchase_price):,} × {round(((1 + body.area_price_inflation_pct/100)**years), 3)} (area growth over {round(years, 1)} yr) = ₹{int(body.purchase_price * ((1 + body.area_price_inflation_pct/100)**years)):,} at possession.",
+            f"A {body.post_possession_boost_pct}% ready-to-move premium lifts the possession value to ₹{int(possession_value):,}.",
+            f"Pre-EMI across construction: ₹{int(pre_emi_total):,} (avg ₹{int(pre_emi_monthly):,}/mo on half-disbursed loan).",
+            f"Construction-cost escalation passed-through: ~₹{int(escalation):,} (registration, GST on hikes, amenities).",
+            f"Effective acquisition: ₹{int(effective_acquisition):,}. Net paper profit at possession: ₹{int(profit):,} — {round(roi, 1)}% annualized on your down-payment.",
+        ],
+    }
+
+
+# ------------------------------------------------------------
+# Ready-to-move vs Under-construction breakeven
+# ------------------------------------------------------------
+class RtmVsUcBreakevenRequest(BaseModel):
+    rtm_price: float = 9500000
+    uc_price: float = 8500000
+    possession_months: int = 36
+    loan_rate: float = 8.5
+    loan_tenure_years: int = 20
+    monthly_rent_rtm: float = 32000
+    expected_rent_at_possession_uc: float = 38000
+    area_appreciation_pct: float = 7.0
+    maintenance_monthly: float = 3000
+    property_tax_yearly: float = 15000
+
+
+@api_router.post("/calc/breakeven-rtm-uc")
+async def breakeven_rtm_uc(body: RtmVsUcBreakevenRequest):
+    """For both RTM and UC: find the minimum down-payment (and corresponding loan amount)
+    such that rent covers EMI + costs once cashflow starts.
+    RTM starts earning rent immediately; UC starts only after possession.
+    """
+    costs_monthly = body.maintenance_monthly + body.property_tax_yearly / 12
+
+    def _find_breakeven(price, rent):
+        # find min DP% where EMI <= rent - costs
+        avail = rent - costs_monthly
+        if avail <= 0:
+            return None
+        # solve EMI*(1-dp) for DP given price — bisect
+        for pct in range(1, 101):
+            loan = price * (1 - pct / 100)
+            emi = _emi(loan, body.loan_rate, body.loan_tenure_years)
+            if emi <= avail:
+                return {
+                    "dp_pct": pct,
+                    "dp_amount": round(price * pct / 100, 2),
+                    "loan": round(loan, 2),
+                    "emi": round(emi, 2),
+                    "cashflow": round(avail - emi, 2),
+                }
+        return None
+
+    rtm = _find_breakeven(body.rtm_price, body.monthly_rent_rtm)
+    uc = _find_breakeven(body.uc_price, body.expected_rent_at_possession_uc)
+
+    # total cost of ownership till breakeven year (5y proxy)
+    # RTM: pays EMI from month 1 but rent offsets
+    # UC: pays pre-EMI during construction; no rent; after possession earns rent
+    r_m = (body.loan_rate / 100) / 12
+
+    def _tco_rtm(dp_pct, years=5):
+        loan = body.rtm_price * (1 - dp_pct / 100)
+        emi = _emi(loan, body.loan_rate, body.loan_tenure_years)
+        out = (emi + costs_monthly - body.monthly_rent_rtm) * 12 * years
+        return round(out, 2)
+
+    def _tco_uc(dp_pct, years=5):
+        loan = body.uc_price * (1 - dp_pct / 100)
+        emi = _emi(loan, body.loan_rate, body.loan_tenure_years)
+        pre_emi_total = (loan * 0.5) * r_m * body.possession_months
+        post_months = max(years * 12 - body.possession_months, 0)
+        post = (emi + costs_monthly - body.expected_rent_at_possession_uc) * post_months
+        return round(pre_emi_total + post, 2)
+
+    # appreciation advantage of UC (bought cheaper today, possession in N months)
+    years = body.possession_months / 12
+    uc_value_at_possession = body.uc_price * ((1 + body.area_appreciation_pct / 100) ** years)
+    rtm_value_at_same_horizon = body.rtm_price * ((1 + body.area_appreciation_pct / 100) ** years)
+    uc_price_advantage = uc_value_at_possession - body.uc_price
+    rtm_price_advantage = rtm_value_at_same_horizon - body.rtm_price
+
+    winner = None
+    if rtm and uc:
+        # net benefit at horizon
+        rtm_net = rtm_price_advantage - _tco_rtm(rtm["dp_pct"], years=5)
+        uc_net = uc_price_advantage - _tco_uc(uc["dp_pct"], years=5)
+        winner = "UC" if uc_net > rtm_net else "RTM"
+
+    return {
+        "inputs": body.model_dump(),
+        "rtm": {
+            **(rtm or {}),
+            "feasible": rtm is not None,
+            "value_at_5y_horizon": round(rtm_value_at_same_horizon, 2),
+            "appreciation_gain": round(rtm_price_advantage, 2),
+            "5y_carrying_cost": _tco_rtm(rtm["dp_pct"]) if rtm else None,
+        },
+        "uc": {
+            **(uc or {}),
+            "feasible": uc is not None,
+            "value_at_possession": round(uc_value_at_possession, 2),
+            "appreciation_gain_at_possession": round(uc_price_advantage, 2),
+            "5y_carrying_cost_incl_pre_emi": _tco_uc(uc["dp_pct"]) if uc else None,
+            "possession_months": body.possession_months,
+        },
+        "winner": winner,
+        "narrative": [
+            f"Ready-to-move: DP {rtm['dp_pct']}% (₹{int(rtm['dp_amount']):,}) makes rent cover EMI+costs immediately." if rtm else "RTM: rent too low vs EMI+costs at any DP.",
+            f"Under-construction: DP {uc['dp_pct']}% (₹{int(uc['dp_amount']):,}) achieves rent-coverage post-possession." if uc else "UC: expected rent too low vs EMI+costs at any DP.",
+            f"UC buys ~₹{int(body.rtm_price - body.uc_price):,} cheaper today and gains ₹{int(uc_price_advantage):,} by possession.",
+            f"RTM pays ₹{int(_tco_rtm(rtm['dp_pct'])) if rtm else 0:,} net over 5 years; UC pays ₹{int(_tco_uc(uc['dp_pct'])) if uc else 0:,} (incl. pre-EMI).",
+        ] if (rtm and uc) else ["Breakeven not found — rent too low vs EMI+costs."],
+    }
+
+
+# ------------------------------------------------------------
+# Projects watchlist
+# ------------------------------------------------------------
+@api_router.post("/projects/{project_id}/watch")
+async def watch_project(project_id: str, user: dict = Depends(get_current_user)):
+    # idempotent upsert
+    await db.project_watches.update_one(
+        {"user_id": user["id"], "project_id": project_id},
+        {"$set": {"user_id": user["id"], "project_id": project_id, "created_at": datetime.now(timezone.utc).isoformat()}},
+        upsert=True,
+    )
+    return {"ok": True, "project_id": project_id}
+
+
+@api_router.delete("/projects/{project_id}/watch")
+async def unwatch_project(project_id: str, user: dict = Depends(get_current_user)):
+    await db.project_watches.delete_one({"user_id": user["id"], "project_id": project_id})
+    return {"ok": True}
+
+
+@api_router.get("/projects/watched")
+async def my_watched_projects(user: dict = Depends(get_current_user)):
+    watches = await db.project_watches.find({"user_id": user["id"]}, {"_id": 0}).sort("created_at", -1).to_list(200)
+    ids = [w["project_id"] for w in watches]
+    # Resolve from curated + community
+    curated = {p["id"]: p for p in UPCOMING_PROJECTS}
+    community_docs = await db.community_projects.find({"id": {"$in": ids}}, {"_id": 0}).to_list(200)
+    community = {p["id"]: p for p in community_docs}
+    resolved = []
+    for w in watches:
+        pid = w["project_id"]
+        p = curated.get(pid) or community.get(pid)
+        if p:
+            resolved.append({**p, "watched_at": w.get("created_at")})
+    return {"projects": resolved, "count": len(resolved)}
+
+
+# ------------------------------------------------------------
+# Tenant login + rent payment
+# ------------------------------------------------------------
+class TenantInviteRequest(BaseModel):
+    password: Optional[str] = None    # if None, we generate a 10-char password
+
+
+@api_router.post("/tenants/{tenant_id}/invite")
+async def invite_tenant(tenant_id: str, body: TenantInviteRequest, user: dict = Depends(get_current_user)):
+    tenant = await db.tenants.find_one({"id": tenant_id, "user_id": user["id"]}, {"_id": 0})
+    if not tenant:
+        raise HTTPException(404, "Tenant not found")
+    if not tenant.get("email"):
+        raise HTTPException(400, "Tenant has no email on record — edit tenant and add email first")
+
+    # Create tenant login if not exists
+    email = tenant["email"].lower().strip()
+    existing = await db.users.find_one({"email": email})
+    pw = body.password or secrets.token_urlsafe(8)
+    if existing:
+        # re-link (or just update password if already a tenant)
+        if existing.get("role") != "tenant":
+            raise HTTPException(400, "Email already registered as a non-tenant user")
+        await db.users.update_one(
+            {"_id": existing["_id"]},
+            {"$set": {
+                "password_hash": hash_password(pw),
+                "landlord_id": user["id"],
+                "tenant_id": tenant_id,
+            }},
+        )
+        tenant_user_id = str(existing["_id"])
+    else:
+        tenant_doc = {
+            "email": email,
+            "name": tenant.get("name", ""),
+            "password_hash": hash_password(pw),
+            "role": "tenant",
+            "plan": "free",
+            "plan_status": "active",
+            "trial_ends_at": None,
+            "plan_expires_at": None,
+            "landlord_id": user["id"],
+            "tenant_id": tenant_id,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }
+        r = await db.users.insert_one(tenant_doc)
+        tenant_user_id = str(r.inserted_id)
+
+    await db.tenants.update_one(
+        {"id": tenant_id},
+        {"$set": {"portal_user_id": tenant_user_id, "portal_invited_at": datetime.now(timezone.utc).isoformat()}},
+    )
+
+    # Notify (stub if RESEND not configured)
+    try:
+        subj = "You're invited to the Estima tenant portal"
+        html = f"<p>Hi {tenant.get('name', '')},</p><p>Your landlord has set up a tenant portal for rent receipts and payments.</p><p>Login: <b>{email}</b><br/>Password: <b>{pw}</b></p><p>Sign in at /login — change your password once inside.</p>"
+        notify.send_email(email, subj, html)
+    except Exception:
+        logger.exception("tenant invite email failed")
+
+    return {"ok": True, "tenant_email": email, "temp_password": pw, "tenant_user_id": tenant_user_id}
+
+
+def _require_tenant(user: dict):
+    if user.get("role") != "tenant":
+        raise HTTPException(403, "Tenant access only")
+
+
+@api_router.get("/tenant/me")
+async def tenant_me(user: dict = Depends(get_current_user)):
+    _require_tenant(user)
+    u = await db.users.find_one({"_id": ObjectId(user["id"])}, {"_id": 0, "password_hash": 0})
+    tenant_id = u.get("tenant_id") if u else None
+    tenant = await db.tenants.find_one({"id": tenant_id}, {"_id": 0}) if tenant_id else None
+    return {"user": {"id": user["id"], "email": user["email"], "name": u.get("name", "") if u else ""}, "tenant": tenant}
+
+
+@api_router.get("/tenant/receipts")
+async def tenant_receipts(user: dict = Depends(get_current_user)):
+    _require_tenant(user)
+    u = await db.users.find_one({"_id": ObjectId(user["id"])})
+    tenant_id = u.get("tenant_id") if u else None
+    if not tenant_id:
+        return []
+    return await db.receipts.find({"tenant_id": tenant_id}, {"_id": 0}).sort("created_at", -1).to_list(300)
+
+
+class TenantPayRequest(BaseModel):
+    month: str
+    amount: float
+    notes: str = ""
+
+
+@api_router.post("/tenant/pay/create-order")
+async def tenant_create_order(body: TenantPayRequest, user: dict = Depends(get_current_user)):
+    _require_tenant(user)
+    if not razor_client:
+        raise HTTPException(502, "Razorpay not configured on server")
+    amount_paise = int(body.amount * 100)
+    order = razor_client.order.create({
+        "amount": amount_paise,
+        "currency": "INR",
+        "notes": {"tenant_user_id": user["id"], "month": body.month, "purpose": "rent"},
+    })
+    # track pending order
+    await db.rent_orders.insert_one({
+        "order_id": order["id"],
+        "tenant_user_id": user["id"],
+        "amount": body.amount,
+        "month": body.month,
+        "status": "created",
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    })
+    return {"order_id": order["id"], "amount": amount_paise, "currency": "INR", "razorpay_key_id": RAZORPAY_KEY_ID}
+
+
+class TenantPayVerifyRequest(BaseModel):
+    razorpay_order_id: str
+    razorpay_payment_id: str
+    razorpay_signature: str
+
+
+@api_router.post("/tenant/pay/verify")
+async def tenant_pay_verify(body: TenantPayVerifyRequest, user: dict = Depends(get_current_user)):
+    _require_tenant(user)
+    if not razor_client or not RAZORPAY_KEY_SECRET:
+        raise HTTPException(502, "Razorpay not configured")
+    msg = f"{body.razorpay_order_id}|{body.razorpay_payment_id}".encode()
+    sig = hmac.new(RAZORPAY_KEY_SECRET.encode(), msg, hashlib.sha256).hexdigest()
+    if sig != body.razorpay_signature:
+        raise HTTPException(400, "Signature mismatch")
+    order = await db.rent_orders.find_one({"order_id": body.razorpay_order_id}, {"_id": 0})
+    if not order:
+        raise HTTPException(404, "Order not found")
+    u = await db.users.find_one({"_id": ObjectId(user["id"])})
+    tenant_id = u.get("tenant_id") if u else None
+    tenant = await db.tenants.find_one({"id": tenant_id}, {"_id": 0}) if tenant_id else None
+    # Auto-generate receipt
+    receipt_no = f"TRN-{datetime.now(timezone.utc).strftime('%Y%m')}-{secrets.token_hex(3).upper()}"
+    receipt = {
+        "id": str(uuid.uuid4()),
+        "tenant_id": tenant_id,
+        "user_id": tenant.get("user_id") if tenant else None,
+        "month": order["month"],
+        "amount": order["amount"],
+        "paid_on": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+        "payment_mode": "Razorpay",
+        "payment_id": body.razorpay_payment_id,
+        "receipt_no": receipt_no,
+        "notes": "Online payment via tenant portal",
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.receipts.insert_one(receipt.copy())
+    receipt.pop("_id", None)
+    await db.rent_orders.update_one({"order_id": body.razorpay_order_id}, {"$set": {"status": "paid", "payment_id": body.razorpay_payment_id}})
+    return {"ok": True, "receipt": receipt}
+
+
+# ------------------------------------------------------------
+# Generational transfer — admin creates new login for next-gen + transfers properties
+# ------------------------------------------------------------
+class LegacyTransferRequest(BaseModel):
+    from_user_id: str
+    new_email: EmailStr
+    new_name: str
+    transfer_properties: bool = True
+    transfer_tenants: bool = True
+    temp_password: Optional[str] = None
+    note: Optional[str] = None
+
+
+@api_router.post("/admin/legacy-transfer")
+async def admin_legacy_transfer(body: LegacyTransferRequest, user: dict = Depends(get_current_user)):
+    _require_admin(user)
+    src = await db.users.find_one({"_id": ObjectId(body.from_user_id)})
+    if not src:
+        raise HTTPException(404, "Source user not found")
+    new_email = body.new_email.lower().strip()
+    existing = await db.users.find_one({"email": new_email})
+    if existing:
+        raise HTTPException(400, "New email already in use")
+
+    pw = body.temp_password or secrets.token_urlsafe(10)
+    now = datetime.now(timezone.utc)
+    referral_code = secrets.token_urlsafe(6).replace("_", "").replace("-", "")[:8].upper()
+
+    new_doc = {
+        "email": new_email,
+        "name": body.new_name.strip(),
+        "password_hash": hash_password(pw),
+        "role": "user",
+        "plan": src.get("plan", "free"),
+        "plan_status": src.get("plan_status", "none"),
+        "trial_ends_at": src.get("trial_ends_at"),
+        "plan_expires_at": src.get("plan_expires_at"),
+        "referral_code": referral_code,
+        "referred_by": None,
+        "legacy_from": body.from_user_id,
+        "legacy_from_email": src.get("email"),
+        "legacy_transferred_at": now.isoformat(),
+        "legacy_note": body.note or "",
+        "created_at": now.isoformat(),
+    }
+    r = await db.users.insert_one(new_doc)
+    new_uid = str(r.inserted_id)
+
+    transfer_log = {"properties": 0, "tenants": 0, "receipts": 0, "shares": 0}
+    if body.transfer_properties:
+        pres = await db.properties.update_many(
+            {"user_id": body.from_user_id},
+            {"$set": {"user_id": new_uid, "legacy_from": body.from_user_id}},
+        )
+        transfer_log["properties"] = pres.modified_count
+    if body.transfer_tenants:
+        tres = await db.tenants.update_many(
+            {"user_id": body.from_user_id},
+            {"$set": {"user_id": new_uid, "legacy_from": body.from_user_id}},
+        )
+        transfer_log["tenants"] = tres.modified_count
+        rres = await db.receipts.update_many(
+            {"user_id": body.from_user_id},
+            {"$set": {"user_id": new_uid, "legacy_from": body.from_user_id}},
+        )
+        transfer_log["receipts"] = rres.modified_count
+    sres = await db.shares.update_many(
+        {"user_id": body.from_user_id},
+        {"$set": {"user_id": new_uid, "legacy_from": body.from_user_id}},
+    )
+    transfer_log["shares"] = sres.modified_count
+
+    # Freeze source user (can still log in but plan=legacy_archived)
+    await db.users.update_one(
+        {"_id": src["_id"]},
+        {"$set": {"legacy_transferred_to": new_uid, "legacy_transferred_at": now.isoformat(), "role": "legacy_archived"}},
+    )
+
+    # Notify
+    try:
+        subj = "You've inherited an Estima portfolio"
+        html = f"<p>Hi {body.new_name},</p><p>{src.get('name', 'A family member')} has transferred their Estima portfolio to you.</p><p>Login: <b>{new_email}</b><br/>Temporary password: <b>{pw}</b></p><p>Transferred: {transfer_log['properties']} properties · {transfer_log['tenants']} tenants · {transfer_log['shares']} shared reports.</p>"
+        notify.send_email(new_email, subj, html)
+    except Exception:
+        logger.exception("legacy transfer email failed")
+
+    return {
+        "ok": True,
+        "new_user_id": new_uid,
+        "new_email": new_email,
+        "temp_password": pw,
+        "transferred": transfer_log,
+    }
 
 
 # ------------------------------------------------------------
