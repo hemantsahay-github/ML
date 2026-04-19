@@ -1,5 +1,5 @@
 import { createContext, useContext, useEffect, useState, useCallback } from "react";
-import api, { formatApiErrorDetail } from "../lib/api";
+import api, { formatApiErrorDetail, tokenStore } from "../lib/api";
 
 const AuthContext = createContext(null);
 
@@ -56,7 +56,10 @@ export function AuthProvider({ children }) {
   const logout = async () => {
     try {
       await api.post("/auth/logout");
-    } catch {}
+    } catch {
+      // ignore network errors on logout
+    }
+    tokenStore.clear();
     setUser(false);
   };
 

@@ -168,6 +168,10 @@ class UserOut(BaseModel):
     is_pro: bool = False
     is_demo: bool = False
     referral_code: Optional[str] = None
+    # Bearer-token fallback for browsers/contexts where 3rd-party cookies are blocked.
+    # Set only on login/register/google-session/refresh/demo-login responses; absent from /auth/me.
+    access_token: Optional[str] = None
+    refresh_token: Optional[str] = None
 
 
 def _compute_plan_state(user: dict) -> dict:
@@ -221,6 +225,17 @@ def _user_out(user: dict) -> UserOut:
         referral_code=user.get("referral_code"),
         **state,
     )
+
+
+def _user_out_with_tokens(user: dict, access: str, refresh: str) -> UserOut:
+    """Same as _user_out but includes access+refresh tokens in body.
+    Used on login/register/google-session/demo-login so the frontend can fall
+    back to Authorization: Bearer when third-party cookies are blocked (Chrome
+    tracking protection, Safari ITP, etc.)."""
+    out = _user_out(user)
+    out.access_token = access
+    out.refresh_token = refresh
+    return out
 
 
 # ------------------------------------------------------------
@@ -319,7 +334,7 @@ async def register(body: RegisterIn, response: Response):
     set_auth_cookies(response, access, refresh)
     doc["id"] = uid
     _send_welcome_email_safe(email, doc["name"])
-    return _user_out(doc)
+    return _user_out_with_tokens(doc, access, refresh)
 
 
 @api_router.post("/auth/login", response_model=UserOut)
@@ -353,7 +368,7 @@ async def login(body: LoginIn, response: Response, request: Request):
     refresh = create_refresh_token(uid)
     set_auth_cookies(response, access, refresh)
     user["id"] = uid
-    return _user_out(user)
+    return _user_out_with_tokens(user, access, refresh)
 
 
 @api_router.post("/auth/logout")
@@ -380,8 +395,8 @@ async def refresh_token(request: Request, response: Response):
         if not user:
             raise HTTPException(status_code=401, detail="User not found")
         new_access = create_access_token(str(user["_id"]), user["email"])
-        response.set_cookie("access_token", new_access, httponly=True, secure=False, samesite="lax", max_age=60 * 60 * 24, path="/")
-        return {"ok": True}
+        response.set_cookie("access_token", new_access, httponly=True, secure=True, samesite="none", max_age=60 * 60 * 24, path="/")
+        return {"ok": True, "access_token": new_access}
     except jwt.InvalidTokenError:
         raise HTTPException(status_code=401, detail="Invalid refresh token")
 
@@ -2190,7 +2205,7 @@ async def google_session(body: GoogleSessionIn, response: Response):
     access = create_access_token(uid, email)
     refresh = create_refresh_token(uid)
     set_auth_cookies(response, access, refresh)
-    return _user_out(user_doc)
+    return _user_out_with_tokens(user_doc, access, refresh)
 
 
 # ------------------------------------------------------------
@@ -3799,7 +3814,7 @@ async def demo_login(response: Response):
     refresh = create_refresh_token(uid)
     set_auth_cookies(response, access, refresh)
     u["id"] = uid
-    return _user_out(u)
+    return _user_out_with_tokens(u, access, refresh)
 
 
 # ------------------------------------------------------------
@@ -4938,7 +4953,7 @@ async def lawyer_register(body: LawyerRegisterIn, response: Response):
     set_auth_cookies(response, access, refresh_token)
     doc["id"] = uid
     doc.pop("_id", None)
-    return _user_out(doc)
+    return _user_out_with_tokens(doc, access, refresh_token)
 
 
 @api_router.get("/lawyers")
