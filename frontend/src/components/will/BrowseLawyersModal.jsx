@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import api, { formatApiErrorDetail } from "../../lib/api";
 import { logger } from "../../lib/logger";
 import { toast } from "sonner";
@@ -22,15 +22,24 @@ export default function BrowseLawyersModal({ open, onClose, onPaid, onSaveDraft,
   const [bookNote, setBookNote] = useState("");
   const [bookingId, setBookingId] = useState(null);
 
-  // Lazy-load lawyers when modal opens
-  if (open && !loadedOnce && !lawyersLoading) {
+  // Lazy-load lawyers on open (idiomatic useEffect, not render-side-effect)
+  useEffect(() => {
+    if (!open || loadedOnce || lawyersLoading) return;
+    let cancelled = false;
     setLawyersLoading(true);
     setLoadedOnce(true);
     api.get("/lawyers")
-      .then(({ data }) => setLawyersList(data.lawyers || []))
-      .catch((e) => toast.error(formatApiErrorDetail(e.response?.data?.detail)))
-      .finally(() => setLawyersLoading(false));
-  }
+      .then(({ data }) => {
+        if (!cancelled) setLawyersList(data.lawyers || []);
+      })
+      .catch((e) => {
+        if (!cancelled) toast.error(formatApiErrorDetail(e.response?.data?.detail));
+      })
+      .finally(() => {
+        if (!cancelled) setLawyersLoading(false);
+      });
+    return () => { cancelled = true; };
+  }, [open, loadedOnce, lawyersLoading]);
 
   const bookLawyer = async (lawyer) => {
     setBookingId(lawyer.id);

@@ -319,3 +319,44 @@ Personal property buying options and decision making and managing — comparing 
 - Swap Resend / Twilio / UIDAI Aadhaar mocks for real providers when API keys are supplied.
 - Split large pages per SRP (deferred maintenance sprint).
 
+
+## 2026-04-19 — Code-quality batch (iteration 15 · zero behavior change)
+**Security:**
+- Moved remaining hardcoded test credentials to `os.environ.get()`:
+  - `tests/test_iteration5.py` — `TEST_USER_PASSWORD`
+  - `tests/test_iteration14.py` — `ADMIN_EMAIL`, `ADMIN_PASSWORD`, `VERIFIED_LAWYER_EMAIL/PASSWORD/ID`, `TEST_USER_PASSWORD`
+
+**Dead code / lint:**
+- Fixed 5 Ruff F841 flags (unused locals: `buy_net_worth`, `rent_net_worth`, `prev_year`, `construction_months`, `ten_pre_emi`, `twenty_pre_emi`, `r`, `months`, `buyer_emi_paid`) in server.py. Backend lint: **All checks passed**.
+- Removed ambiguous single-letter variable name `l` in timeline helpers (E741).
+
+**Backend complexity refactor (pure extractions, behavior-preserving):**
+- `register()` → `_unique_referral_code()`, `_resolve_referrer_id()`, `_grant_referrer_reward()`, `_send_welcome_email_safe()`. Main function now ~30 lines.
+- `resale_estimate()` → `_avg_rent_for_resale()`, `_make_net_proceeds_fn()` (closure), `_solve_sale_price_for_target()` (bisection), `_resale_xirr()`.
+- `portfolio_summary()` → `_owned_item_row()`, `_sold_item_row()`. Internal `_raw_*` keys stripped before return — verified no `_id` leak.
+- `portfolio_timeline()` → `_timeline_contrib_sold()`, `_timeline_contrib_owned()`, `_timeline_year_row()`.
+- `export_pdf()` → module-level `_PDF_TABLE_HEADER_STYLE` / `_PDF_TABLE_COMPACT_STYLE` + `_pdf_header_story()` / `_pdf_winner_story()` / `_pdf_ranking_table()` / `_pdf_breakdown_table()`.
+
+**React hygiene:**
+- New `/app/frontend/src/lib/logger.js` — dev-only `debug/info/warn/error`, strips to no-op in production (`NODE_ENV === 'development'`).
+- Replaced all 4 `console.debug(...)` calls (Dashboard, Referrals, Will, Portfolio, Advisor) with the logger.
+- Converted `WitnessSign.jsx` IIFE-in-`useEffect` to `useCallback` + `useEffect(load, [load])` pattern.
+- Stable keys in `Pricing.jsx`, `LawyerReview.jsx` (2 spots).
+- Moved recharts chart config objects (`CHART_LEFT_MARGIN`, `SCORE_DOMAIN`, `TOOLTIP_CURSOR`, `BAR_RADIUS`) to module scope in `Compare.jsx` and `SharedReport.jsx` — kills a class of unnecessary re-renders.
+
+**Component splits (deferred from previous reviews):**
+- `Will.jsx` 666 → **556** lines (16% shrink). New `/app/frontend/src/components/will/BrowseLawyersModal.jsx` (150L) — owns lawyer fetch + Razorpay checkout orchestration. Uses idiomatic `useEffect` with `cancelled` guard per testing agent's review note.
+- `Tenants.jsx` 490 → **397** lines (19% shrink). New `/app/frontend/src/components/tenants/AadhaarModal.jsx` (130L) — owns OTP step machine.
+
+**API surface:**
+- `UserOut` / `GET /api/auth/me` now exposes `referral_code` (previously referral-reward flow was opaque to API clients — flagged by iteration_15 testing).
+
+**Tests:** iteration_15.json — 13/13 backend, 7/7 frontend smoke. Zero regressions. One skipped referral-reward test now retestable with new `referral_code` surfaced on `/auth/me`.
+
+## Backlog / Next (P2)
+- Continue frontend splits deferred: `Properties.jsx` (798L), `Portfolio.jsx` (516L) still flagged by reviewer. Next targets: `Advisor` (cyclomatic 25), `AppShell` (22), `Admin` (17).
+- Split `server.py` (~5245 lines) into domain routers (lawyers.py / will.py / billing.py / admin.py / market.py / calc.py / portfolio.py).
+- Expand Python type hint coverage (currently ~10%) — prioritise public API signatures.
+- Swap Resend / Twilio / UIDAI Aadhaar mocks for real providers when API keys supplied.
+- Admin cleanup endpoint to bulk-delete throwaway `TEST_*` accounts from seed runs.
+

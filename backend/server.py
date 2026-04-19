@@ -158,6 +158,7 @@ class UserOut(BaseModel):
     plan_expires_at: Optional[str] = None
     is_pro: bool = False
     is_demo: bool = False
+    referral_code: Optional[str] = None
 
 
 def _compute_plan_state(user: dict) -> dict:
@@ -208,6 +209,7 @@ def _user_out(user: dict) -> UserOut:
         name=user.get("name", ""),
         role=user.get("role", "user"),
         is_demo=bool(user.get("is_demo", False)),
+        referral_code=user.get("referral_code"),
         **state,
     )
 
