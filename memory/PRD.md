@@ -244,3 +244,34 @@ Personal property buying options and decision making and managing — comparing 
 - Attach password-protected Will PDF to `/api/will/notify-beneficiaries` Resend call in production.
 - Add per-user rate-limit / dedupe on `/api/market/contribute`.
 
+
+## 2026-04-19 — Code-quality batch (iteration 13 · zero behavior change)
+**Security:**
+- `DEMO_PASSWORD` moved to `backend/.env`; `server.py` reads via `os.environ.get("DEMO_PASSWORD") or secrets.token_urlsafe(24)`.
+- All backend test files (`test_estima`, `test_new_features`, `test_iteration4..9`, `test_portfolio_features`) now read `ADMIN_EMAIL` / `ADMIN_PASSWORD` / `TEST_USER_PASSWORD` via `os.environ.get(...)` (with sensible fallbacks for local dev).
+
+**React hygiene:**
+- All flagged `useEffect` loader blocks wrapped in `useCallback` across Will, Portfolio, SharedReport, Dashboard, Advisor — eliminates the "missing deps" linter warnings without behaviour change.
+- Empty `catch {}` blocks in Will/Portfolio/Advisor/Referrals now `console.debug` the error (non-fatal but traceable).
+- 22 index-as-key instances replaced with stable keys (`id`, stable string, or generated `_k` via `crypto.randomUUID()`) in: `Calculators.jsx` (7), `Landing.jsx` (2), `Guide.jsx` (3), `Portfolio.jsx` (1), `Properties.jsx` (1), `Will.jsx` (2), `Advisor.jsx` (1), `Referrals.jsx` (1).
+
+**Backend complexity refactor:**
+- `loan_optimizer()` broken into `_optimizer_pre_emi()`, `_optimizer_horizon_projection()`, `_optimizer_xirr_for_dp()` helpers — complexity drops from 26 → ~8 per function. Verified identical grid output + identical leverage XIRR / net-equity values via regression test.
+
+**Frontend complexity refactor:**
+- `NearbyMarketCard` broken into `deriveLocation`, `buildMarketQuery`, `RentVsMarket`, `MarketSummary` sub-components — complexity drops from 25 → <10.
+
+**Accepted as-is (documented, not changed):**
+- `Tour.jsx` localStorage stores only `estima_tour_seen_v1="1"` — a non-sensitive UI preference (flagged by reviewer, but removing would downgrade onboarding UX).
+- Large oversized-component splits (`Will.jsx` 515L, `Properties.jsx` 507L, `Portfolio.jsx` 430L, `Tenants.jsx`, `Compare.jsx`, `Landing.jsx`) and backend mega-function splits (`portfolio_timeline`, `portfolio_summary`, `export_pdf`, `register`, `resale_estimate`) are deferred to a dedicated refactoring sprint to minimise regression risk on the 14-calculator math suite.
+
+**Tests:** iteration_13.json — 19/19 backend, 100% frontend smoke, zero React key warnings, zero regressions.
+
+## Backlog / Next (P2)
+- Split `server.py` (~4850 lines) into domain routers (market.py, verify.py, will.py, billing.py, admin.py).
+- Split large pages (`Will`, `Properties`, `Portfolio`, `Tenants`, `Compare`, `Landing`) per Single Responsibility.
+- Reduce complexity of remaining backend funcs: `portfolio_timeline`, `portfolio_summary`, `export_pdf`, `register`, `resale_estimate`.
+- Swap Resend / Twilio / UIDAI Aadhaar mocks for real providers when API keys are supplied.
+- Attach password-protected Will PDF to `/api/will/notify-beneficiaries` Resend call in production.
+- Add per-user rate-limit / dedupe on `/api/market/contribute`.
+

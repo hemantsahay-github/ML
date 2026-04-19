@@ -282,8 +282,8 @@ export default function Portfolio() {
           {summary.items.length > 1 && (
             <div className="card-flat p-6 mb-10">
               <div className="eyebrow mb-4">Value allocation</div>
-              <div style={{ width: "100%", height: 260 }}>
-                <ResponsiveContainer>
+              <div style={{ width: "100%", minWidth: 0, height: 260 }}>
+                <ResponsiveContainer minWidth={0} minHeight={0}>
                   <PieChart>
                     <Pie
                       data={summary.items}
