@@ -160,3 +160,33 @@ Personal property buying options and decision making and managing — comparing 
 - 14 calculator tabs in total — Why buy (wealth), Car vs Property, EMI, Rent vs Buy, Property vs MF vs Equity, Cashflow-positive finder, Rent-for-cashflow, Resale estimator, Loan optimizer, Builder plan, UC expected value, RTM vs UC breakeven, Prepay vs Invest, XIRR.
 
 **Tests:** iteration_9.json — 13/13 backend, 100% frontend on all 7 new flows.
+
+## 2026-04-18 — Will · Demo mode · Leverage XIRR · Car-Property full finance · Subvention everywhere
+**Personal Will (`/app/will`):**
+- POST/GET /api/will — save draft (testator, executor, beneficiaries, per-property splits, witnesses).
+- GET /api/will/pdf — downloadable Last Will and Testament PDF (ReportLab), compliant with Indian Succession Act format (includes witness signature lines + disclaimer).
+- New nav entry with Scroll icon.
+
+**Demo mode (one-click):**
+- POST /api/auth/demo-login — creates/returns `demo@estima.com` (plan=pro, is_demo=true) with 4 pre-seeded properties (evaluating/owned/sold).
+- UserOut now includes `is_demo` flag.
+- Login page gets a dashed "Try the demo — no signup" CTA.
+
+**Loan Optimizer → Loan Leverage Optimizer:**
+- Grid now returns `leverage_xirr_pct`, `leverage_cagr_pct`, `net_equity_at_horizon` per DP%.
+- Factors appreciation + rent growth + EMI + costs + optional pre-EMI over a 10-yr (configurable) horizon.
+- UI gets a "Best 10-yr leverage XIRR" banner and new Leverage XIRR / CAGR columns.
+
+**Car vs Property — full finance:**
+- Inputs now include CAR: price, DP, loan rate, tenure, depreciation, running cost, replace cycle; PROPERTY: price, DP, loan rate, tenure, appreciation, monthly rent, rent-increase.
+- Response returns `car_xirr_pct`, `property_xirr_pct`, side-by-side finance cards, trajectory.
+
+**UC projection + RTM vs UC — subvention + XIRR:**
+- `/api/calc/uc-projection` accepts `pre_emi_by_builder`, returns `pre_emi_by_builder_total`, `pre_emi_by_buyer_total`, `subvention_saving`, and true **xirr_pct** for the buyer's cashflow (−DP, −pre-EMI until handover, +possession value).
+- `/api/calc/breakeven-rtm-uc` accepts `uc_pre_emi_by_builder`, returns `rtm.xirr_5y_pct` and `uc.xirr_5y_pct`, picks winner by XIRR.
+
+**Guide & Landing updated:**
+- Guide tutorials now list 9 feature blocks including Will, Projects directory, Tenants portal, 14-calculator breakdown.
+- Landing home-page features grid = 9 items in 3-col layout.
+
+**Tests:** iteration_10.json — 11/11 backend, 100% frontend on all new flows.

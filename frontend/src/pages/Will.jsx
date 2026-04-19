@@ -36,7 +36,13 @@ export default function Will() {
             witness_1: w.data.witness_1 || "",
             witness_2: w.data.witness_2 || "",
             beneficiaries: w.data.beneficiaries?.length
-              ? w.data.beneficiaries
+              ? w.data.beneficiaries.map((b) => ({
+                  name: b.name || "",
+                  relation: b.relation || "",
+                  email: b.email || "",
+                  phone: b.phone || "",
+                  notes: b.notes || "",
+                }))
               : [{ name: "", relation: "", email: "", phone: "", notes: "" }],
             allocations: w.data.allocations || [],
             preamble_notes: w.data.preamble_notes || "",

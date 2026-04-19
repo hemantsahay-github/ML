@@ -154,6 +154,7 @@ class UserOut(BaseModel):
     trial_ends_at: Optional[str] = None
     plan_expires_at: Optional[str] = None
     is_pro: bool = False
+    is_demo: bool = False
 
 
 def _compute_plan_state(user: dict) -> dict:
@@ -203,6 +204,7 @@ def _user_out(user: dict) -> UserOut:
         email=user["email"],
         name=user.get("name", ""),
         role=user.get("role", "user"),
+        is_demo=bool(user.get("is_demo", False)),
         **state,
     )
 
