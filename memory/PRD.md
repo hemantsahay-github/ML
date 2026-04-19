@@ -131,3 +131,32 @@ Personal property buying options and decision making and managing — comparing 
 - Demo videos section no longer links to YouTube rick-roll — now marked "Coming soon".
 
 **Tests:** iteration_8.json — 12/12 backend, 100% frontend on all new flows.
+
+## 2026-04-18 — Tracking · XIRR · Depreciating assets · UC projection · RTM/UC · Tenant portal · Legacy transfer
+**Projects watchlist:**
+- POST/DELETE /api/projects/{project_id}/watch + GET /api/projects/watched (resolves curated + community).
+- Dashboard now shows a "Projects you're tracking" widget (top 3 watched projects).
+- Projects page has a Watch/Unwatch star toggle on every card.
+
+**New calculators:**
+- POST /api/calc/xirr — proper Newton-Raphson XIRR (with bisection fallback) for irregular real-estate cashflows.
+- POST /api/calc/resale-estimate now returns `xirr_pct` alongside implied CAGR.
+- POST /api/calc/car-vs-property — depreciating car (15% p.a. + running cost + periodic replacement) vs appreciating/rent-yielding property; series + narrative.
+- POST /api/calc/uc-projection — expected possession-day value for UC flats: area inflation + ready-to-move premium − pre-EMI bleed − construction-cost escalation. Month-by-month disbursement schedule (CLP/linear).
+- POST /api/calc/breakeven-rtm-uc — min DP% for RTM and UC such that rent covers EMI+costs. 5-year carrying-cost comparison + appreciation-gain comparison + winner.
+
+**Tenant login + payment portal (`/tenant`):**
+- POST /api/tenants/{id}/invite — landlord creates tenant user (role='tenant'); idempotent (re-invite resets pw).
+- Tenant-only endpoints: /tenant/me, /tenant/receipts, /tenant/pay/create-order, /tenant/pay/verify.
+- Razorpay test-mode rent payment flow; successful verify auto-generates a receipt with payment_mode='Razorpay'.
+- Login auto-redirects tenant users to /tenant.
+- Admin sees "Invite to tenant portal" button per tenant card.
+
+**Legacy / generational transfer:**
+- POST /api/admin/legacy-transfer — admin-only. Creates new user (heir), migrates properties/tenants/receipts/shares, archives source user (role='legacy_archived').
+- Admin → Users → UserPlus icon per row triggers the flow (prompts for new email, name, note).
+
+**UX:**
+- 14 calculator tabs in total — Why buy (wealth), Car vs Property, EMI, Rent vs Buy, Property vs MF vs Equity, Cashflow-positive finder, Rent-for-cashflow, Resale estimator, Loan optimizer, Builder plan, UC expected value, RTM vs UC breakeven, Prepay vs Invest, XIRR.
+
+**Tests:** iteration_9.json — 13/13 backend, 100% frontend on all 7 new flows.
