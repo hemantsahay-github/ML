@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import api, { formatApiErrorDetail } from "../lib/api";
 import { toast } from "sonner";
-import { FilePdf, Plus, Trash, UserPlus, FloppyDisk, ShieldCheck, Sparkle } from "@phosphor-icons/react";
+import { FilePdf, Plus, Trash, UserPlus, FloppyDisk, ShieldCheck, Sparkle, Gavel, PaperPlaneTilt, Bell, CheckCircle, Clock } from "@phosphor-icons/react";
 import Disclaimer from "../components/Disclaimer";
 
 export default function Will() {
@@ -134,6 +134,75 @@ export default function Will() {
   const [aiForm, setAiForm] = useState({ family_context: "", distribution_style: "equal", custom_note: "" });
   const [aiLoading, setAiLoading] = useState(false);
   const [aiReasoning, setAiReasoning] = useState("");
+
+  // Signatures & review state
+  const [sigs, setSigs] = useState(null);
+  const loadSigs = async () => {
+    try {
+      const { data } = await api.get("/will/signatures");
+      setSigs(data);
+    } catch (e) { /* non-fatal */ }
+  };
+  useEffect(() => { loadSigs(); }, []);
+
+  const [lawyerForm, setLawyerForm] = useState({ lawyer_name: "", lawyer_email: "", lawyer_phone: "", note: "" });
+  const [lawyerOpen, setLawyerOpen] = useState(false);
+
+  const sendLawyer = async () => {
+    if (!lawyerForm.lawyer_name || !lawyerForm.lawyer_email) {
+      toast.error("Lawyer name + email are required");
+      return;
+    }
+    await save();
+    try {
+      const { data } = await api.post("/will/send-for-lawyer-review", lawyerForm);
+      toast.success(`Sent to ${lawyerForm.lawyer_name} · review link: ${data.review_url}`, { duration: 15000 });
+      setLawyerOpen(false);
+      loadSigs();
+    } catch (e) {
+      toast.error(formatApiErrorDetail(e.response?.data?.detail));
+    }
+  };
+
+  const [witnessOpen, setWitnessOpen] = useState(null); // 0 or 1
+  const [witnessForm, setWitnessForm] = useState({ witness_name: "", witness_email: "", witness_phone: "" });
+
+  const inviteWitness = async () => {
+    if (!witnessForm.witness_name || !witnessForm.witness_email || !witnessForm.witness_phone) {
+      toast.error("All witness fields required");
+      return;
+    }
+    await save();
+    try {
+      const { data } = await api.post("/will/invite-witness", { witness_index: witnessOpen, ...witnessForm });
+      toast.success(`Sent · sign link: ${data.sign_url}`, { duration: 15000 });
+      setWitnessOpen(null);
+      setWitnessForm({ witness_name: "", witness_email: "", witness_phone: "" });
+      loadSigs();
+    } catch (e) {
+      toast.error(formatApiErrorDetail(e.response?.data?.detail));
+    }
+  };
+
+  const [notifyOpen, setNotifyOpen] = useState(false);
+  const [notifyForm, setNotifyForm] = useState({ personal_note: "", cc_lawyer: true });
+
+  const notifyBene = async () => {
+    const missing = form.beneficiaries.filter((b) => !b.email);
+    if (missing.length) {
+      toast.error(`Add email for: ${missing.map((b) => b.name || "(unnamed)").join(", ")}`);
+      return;
+    }
+    await save();
+    try {
+      const { data } = await api.post("/will/notify-beneficiaries", notifyForm);
+      toast.success(`Sent to ${data.count} beneficiary email${data.count === 1 ? "" : "s"} · Review due ${data.review_due_at.slice(0, 10)}`);
+      setNotifyOpen(false);
+      loadSigs();
+    } catch (e) {
+      toast.error(formatApiErrorDetail(e.response?.data?.detail));
+    }
+  };
 
   const aiDraft = async () => {
     if (!aiForm.family_context.trim()) {
@@ -296,6 +365,88 @@ export default function Will() {
         <div className="grid md:grid-cols-2 gap-3">
           <Field label="Witness 1" value={form.witness_1} onChange={(v) => setForm({ ...form, witness_1: v })} />
           <Field label="Witness 2" value={form.witness_2} onChange={(v) => setForm({ ...form, witness_2: v })} />
+        </div>
+      </section>
+
+      {/* Review & Signatures */}
+      <section className="card-flat p-6 mb-6" data-testid="will-signatures-section">
+        <div className="eyebrow mb-4 flex items-center gap-2"><Gavel size={14} /> Review &amp; signatures</div>
+
+        {/* Lawyer review */}
+        <div className="mb-5 pb-5 border-b hairline">
+          <div className="flex items-start justify-between mb-2 gap-3">
+            <div>
+              <div className="font-serif text-xl">Lawyer review</div>
+              <div className="text-xs text-muted-foreground mt-1">Send your Will to a lawyer for review. They get a secure link to approve or request revisions.</div>
+            </div>
+            {sigs?.review?.status === "reviewed" ? (
+              <span className="text-xs px-2 py-1 bg-[hsl(var(--secondary))]/10 text-[hsl(var(--secondary))] inline-flex items-center gap-1"><CheckCircle size={10} weight="fill" /> Reviewed by {sigs.review.lawyer_name}</span>
+            ) : sigs?.review?.status === "rejected" ? (
+              <span className="text-xs px-2 py-1 bg-destructive/10 text-destructive">Revisions requested</span>
+            ) : sigs?.review?.status === "pending" ? (
+              <span className="text-xs px-2 py-1 bg-[hsl(var(--muted))] text-muted-foreground inline-flex items-center gap-1"><Clock size={10} /> Pending · {sigs.review.lawyer_name}</span>
+            ) : null}
+          </div>
+          {sigs?.review?.review_comments && (
+            <div className="text-xs text-muted-foreground italic bg-[hsl(var(--muted))] p-3 mt-2">
+              "{sigs.review.review_comments}" — {sigs.review.lawyer_name}
+            </div>
+          )}
+          <button onClick={() => setLawyerOpen(true)} className="btn-ghost px-4 py-2 text-xs mt-3 inline-flex items-center gap-2" data-testid="will-send-lawyer">
+            <PaperPlaneTilt size={12} /> {sigs?.review ? "Send to another lawyer" : "Send for lawyer review"}
+          </button>
+        </div>
+
+        {/* Witnesses e-sign */}
+        <div className="mb-5 pb-5 border-b hairline">
+          <div className="font-serif text-xl mb-2">Witness e-signatures</div>
+          <div className="text-xs text-muted-foreground mb-3">Two witnesses (non-beneficiaries) sign via Aadhaar OTP.</div>
+          <div className="space-y-2">
+            {[0, 1].map((idx) => {
+              const invited = sigs?.witnesses?.find((w) => w.witness_index === idx);
+              const name = idx === 0 ? form.witness_1 : form.witness_2;
+              return (
+                <div key={idx} className="flex items-center justify-between border hairline p-3 text-sm" data-testid={`witness-row-${idx}`}>
+                  <div>
+                    <div>Witness {idx + 1}: <b>{invited?.witness_name || name || "—"}</b></div>
+                    {invited && <div className="text-xs text-muted-foreground mt-0.5">{invited.witness_email}</div>}
+                  </div>
+                  <div className="flex items-center gap-2">
+                    {invited?.status === "signed" ? (
+                      <span className="text-xs px-2 py-1 bg-[hsl(var(--secondary))]/10 text-[hsl(var(--secondary))] inline-flex items-center gap-1">
+                        <CheckCircle size={10} weight="fill" /> Signed · ****{invited.aadhaar_last_4}
+                      </span>
+                    ) : (
+                      <button onClick={() => { setWitnessOpen(idx); setWitnessForm({ witness_name: name || "", witness_email: "", witness_phone: "" }); }} className="btn-ghost px-3 py-1.5 text-xs" data-testid={`witness-invite-${idx}`}>
+                        {invited ? "Resend sign link" : "Invite to e-sign"}
+                      </button>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* Notify beneficiaries */}
+        <div>
+          <div className="font-serif text-xl mb-2 flex items-center gap-2"><Bell size={14} /> Notify beneficiaries</div>
+          <div className="text-xs text-muted-foreground mb-3">
+            Send each beneficiary a password-protected PDF copy (password = their first-name lowercase + last 4 of phone). Optionally CCs your lawyer.
+          </div>
+          {sigs?.notifications_sent?.length > 0 && (
+            <div className="text-xs text-[hsl(var(--secondary))] mb-2" data-testid="notify-sent-count">
+              ✓ {sigs.notifications_sent.length} notification{sigs.notifications_sent.length === 1 ? "" : "s"} sent
+            </div>
+          )}
+          <button onClick={() => setNotifyOpen(true)} className="btn-primary px-4 py-2 text-xs inline-flex items-center gap-2" data-testid="will-notify">
+            <Bell size={12} /> Notify beneficiaries
+          </button>
+          {sigs?.review_due_at && (
+            <div className="text-xs text-muted-foreground mt-3 flex items-center gap-2">
+              <Clock size={11} /> Next review reminder: {new Date(sigs.review_due_at).toLocaleDateString("en-IN", { year: "numeric", month: "short", day: "numeric" })}
+            </div>
+          )}
         </div>
       </section>
 

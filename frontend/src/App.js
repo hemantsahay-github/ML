@@ -21,6 +21,8 @@ import Tenants from "./pages/Tenants";
 import Projects from "./pages/Projects";
 import TenantDashboard from "./pages/TenantDashboard";
 import Will from "./pages/Will";
+import LawyerReview from "./pages/LawyerReview";
+import WitnessSign from "./pages/WitnessSign";
 import DisclaimerPage from "./pages/DisclaimerPage";
 import SharedReport from "./pages/SharedReport";
 import AuthCallback from "./pages/AuthCallback";
@@ -39,6 +41,8 @@ function Router() {
       <Route path="/pricing" element={<Pricing />} />
       <Route path="/disclaimer" element={<DisclaimerPage />} />
       <Route path="/share/:id" element={<SharedReport />} />
+      <Route path="/lawyer-review/:token" element={<LawyerReview />} />
+      <Route path="/witness-sign/:token" element={<WitnessSign />} />
       <Route
         path="/tenant"
         element={

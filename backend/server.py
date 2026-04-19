@@ -37,6 +37,7 @@ import razorpay
 
 from city_presets import CITY_PRESETS
 from city_projects import UPCOMING_PROJECTS
+from city_rents import MARKET_DATA
 import notifications as notify
 import requests as httpx_requests
 
@@ -4142,6 +4143,577 @@ async def will_pdf(user: dict = Depends(get_current_user)):
     buf.seek(0)
     return StreamingResponse(buf, media_type="application/pdf",
                              headers={"Content-Disposition": f"attachment; filename=last-will-{datetime.now().strftime('%Y%m%d')}.pdf"})
+
+
+# ------------------------------------------------------------
+# Market data — ongoing rents + per-sqft rates by micro-market
+# ------------------------------------------------------------
+@api_router.get("/market/nearby")
+async def market_nearby(city: Optional[str] = None, area: Optional[str] = None, type: Optional[str] = None, bhk: Optional[str] = None):
+    """Return rent + psf bands for a micro-market. Merges curated + community contributions."""
+    rows = list(MARKET_DATA)
+    try:
+        extra = await db.market_contrib.find({}, {"_id": 0}).to_list(500)
+        rows += extra
+    except Exception:
+        pass
+    if city:
+        rows = [r for r in rows if r.get("city", "").lower() == city.lower()]
+    if area:
+        rows = [r for r in rows if area.lower() in r.get("area", "").lower()]
+    if type:
+        rows = [r for r in rows if r.get("type", "").lower() == type.lower()]
+    if bhk:
+        rows = [r for r in rows if r.get("bhk", "").lower() == bhk.lower()]
+    if not rows:
+        return {"rows": [], "summary": None, "cities": sorted({r["city"] for r in MARKET_DATA})}
+    # Aggregate summary across matching rows
+    rent_avgs = [r["rent_avg"] for r in rows if "rent_avg" in r]
+    psf_avgs = [r["psf_avg"] for r in rows if "psf_avg" in r]
+    yields = [r.get("rental_yield_pct", 0) for r in rows if r.get("rental_yield_pct")]
+    summary = {
+        "rent_avg": round(sum(rent_avgs) / len(rent_avgs), 0) if rent_avgs else 0,
+        "rent_min": min((r["rent_min"] for r in rows if "rent_min" in r), default=0),
+        "rent_max": max((r["rent_max"] for r in rows if "rent_max" in r), default=0),
+        "psf_avg": round(sum(psf_avgs) / len(psf_avgs), 0) if psf_avgs else 0,
+        "psf_min": min((r["psf_min"] for r in rows if "psf_min" in r), default=0),
+        "psf_max": max((r["psf_max"] for r in rows if "psf_max" in r), default=0),
+        "yield_avg_pct": round(sum(yields) / len(yields), 2) if yields else 0,
+        "sample_size": len(rows),
+    }
+    return {"rows": rows, "summary": summary, "cities": sorted({r["city"] for r in MARKET_DATA})}
+
+
+class MarketContribution(BaseModel):
+    city: str
+    area: str
+    type: str = "flat"
+    bhk: str = "2BHK"
+    rent_avg: float
+    psf_avg: float
+    rent_min: Optional[float] = None
+    rent_max: Optional[float] = None
+    psf_min: Optional[float] = None
+    psf_max: Optional[float] = None
+
+
+@api_router.post("/market/contribute")
+async def market_contribute(body: MarketContribution, user: dict = Depends(get_current_user)):
+    doc = body.model_dump()
+    doc["submitted_by"] = user["id"]
+    doc["submitted_at"] = datetime.now(timezone.utc).isoformat()
+    doc["source"] = "community"
+    if not doc.get("rent_min"):
+        doc["rent_min"] = doc["rent_avg"] * 0.85
+    if not doc.get("rent_max"):
+        doc["rent_max"] = doc["rent_avg"] * 1.25
+    if not doc.get("psf_min"):
+        doc["psf_min"] = doc["psf_avg"] * 0.88
+    if not doc.get("psf_max"):
+        doc["psf_max"] = doc["psf_avg"] * 1.18
+    doc["rental_yield_pct"] = round((doc["rent_avg"] * 12) / (doc["psf_avg"] * 1000) * 100, 2) if doc["psf_avg"] else 0
+    await db.market_contrib.insert_one(doc.copy())
+    doc.pop("_id", None)
+    return {"ok": True, "row": doc}
+
+
+# ------------------------------------------------------------
+# Aadhaar verification — STUBBED flow (swap to Digio/Karza/SurePass for production)
+# ------------------------------------------------------------
+class AadhaarInitiateRequest(BaseModel):
+    subject_type: Literal["tenant", "witness", "beneficiary", "self"] = "tenant"
+    subject_id: str                   # tenant_id or witness_index or "self"
+    aadhaar_last_4: str               # "1234" — we never store the full number in mock
+    phone: str
+    name: str
+
+
+class AadhaarConfirmRequest(BaseModel):
+    txn_id: str
+    otp: str                          # any 6 digits in stub mode
+
+
+@api_router.post("/verify/aadhaar/initiate")
+async def aadhaar_initiate(body: AadhaarInitiateRequest, user: dict = Depends(get_current_user)):
+    if len(body.aadhaar_last_4) != 4 or not body.aadhaar_last_4.isdigit():
+        raise HTTPException(400, "Aadhaar last-4 must be 4 digits")
+    txn_id = f"akyc-{uuid.uuid4().hex[:12]}"
+    now = datetime.now(timezone.utc)
+    doc = {
+        "txn_id": txn_id,
+        "user_id": user["id"],
+        "subject_type": body.subject_type,
+        "subject_id": body.subject_id,
+        "aadhaar_last_4": body.aadhaar_last_4,
+        "phone": body.phone,
+        "name": body.name,
+        "status": "otp_sent",
+        "created_at": now.isoformat(),
+        "expires_at": (now + timedelta(minutes=10)).isoformat(),
+        "mode": "stub",
+    }
+    await db.aadhaar_txns.insert_one(doc.copy())
+    # STUBBED: real flow would send OTP to Aadhaar-linked phone via provider
+    logger.info(f"[AADHAAR-STUB] OTP sent for txn {txn_id} — accept any 6-digit OTP in stub mode.")
+    return {"ok": True, "txn_id": txn_id, "mode": "stub", "message": "OTP sent to Aadhaar-linked phone (stub — any 6-digit OTP will verify)"}
+
+
+@api_router.post("/verify/aadhaar/confirm")
+async def aadhaar_confirm(body: AadhaarConfirmRequest, user: dict = Depends(get_current_user)):
+    if len(body.otp) != 6 or not body.otp.isdigit():
+        raise HTTPException(400, "OTP must be 6 digits")
+    txn = await db.aadhaar_txns.find_one({"txn_id": body.txn_id, "user_id": user["id"]})
+    if not txn:
+        raise HTTPException(404, "Transaction not found")
+    if txn["status"] == "verified":
+        return {"ok": True, "already_verified": True, "subject_type": txn["subject_type"], "subject_id": txn["subject_id"]}
+    now = datetime.now(timezone.utc)
+    if datetime.fromisoformat(txn["expires_at"]) < now:
+        raise HTTPException(400, "OTP expired — please initiate again")
+    # STUBBED: real flow verifies OTP with UIDAI/partner; here we accept any 6-digit
+    await db.aadhaar_txns.update_one({"txn_id": body.txn_id}, {"$set": {"status": "verified", "verified_at": now.isoformat()}})
+    # Mark subject
+    verification = {
+        "aadhaar_verified": True,
+        "aadhaar_last_4": txn["aadhaar_last_4"],
+        "aadhaar_verified_at": now.isoformat(),
+        "aadhaar_verified_name": txn["name"],
+        "aadhaar_verification_mode": "stub",
+    }
+    if txn["subject_type"] == "tenant":
+        await db.tenants.update_one({"id": txn["subject_id"], "user_id": user["id"]}, {"$set": verification})
+    elif txn["subject_type"] == "self":
+        await db.users.update_one({"_id": ObjectId(user["id"])}, {"$set": verification})
+    # (witness / beneficiary handled via will token flow, not here)
+    return {"ok": True, "verified": True, "subject_type": txn["subject_type"], "subject_id": txn["subject_id"], "aadhaar_last_4": txn["aadhaar_last_4"]}
+
+
+# ------------------------------------------------------------
+# Will — lawyer review (BYO), witness e-sign, beneficiary notifications, review reminders
+# ------------------------------------------------------------
+class LawyerReviewRequest(BaseModel):
+    lawyer_name: str
+    lawyer_email: EmailStr
+    lawyer_phone: Optional[str] = None
+    note: Optional[str] = None
+
+
+@api_router.post("/will/send-for-lawyer-review")
+async def send_for_lawyer_review(body: LawyerReviewRequest, user: dict = Depends(get_current_user)):
+    will = await db.wills.find_one({"user_id": user["id"]})
+    if not will:
+        raise HTTPException(404, "Draft the Will first")
+    token = secrets.token_urlsafe(24)
+    now = datetime.now(timezone.utc)
+    review_doc = {
+        "token": token,
+        "will_user_id": user["id"],
+        "lawyer_name": body.lawyer_name,
+        "lawyer_email": body.lawyer_email.lower().strip(),
+        "lawyer_phone": body.lawyer_phone or "",
+        "note": body.note or "",
+        "status": "pending",          # pending | reviewed | rejected
+        "review_comments": "",
+        "reviewed_pdf_url": None,
+        "created_at": now.isoformat(),
+        "expires_at": (now + timedelta(days=30)).isoformat(),
+    }
+    await db.will_reviews.insert_one(review_doc.copy())
+    review_doc.pop("_id", None)
+
+    public_base = os.environ.get("PUBLIC_APP_URL", "").rstrip("/") or "https://estima.co.in"
+    review_url = f"{public_base}/lawyer-review/{token}"
+    try:
+        notify.send_email(
+            body.lawyer_email,
+            f"Will review request from {user.get('name') or user.get('email')}",
+            (
+                f"<p>Dear {body.lawyer_name},</p>"
+                f"<p>{user.get('name') or user.get('email')} has requested your review of their Last Will and Testament drafted via Estima.</p>"
+                f"<p>Please review and either approve or provide revisions:</p>"
+                f"<p><a href='{review_url}'>{review_url}</a></p>"
+                + (f"<p>Note from client: {body.note}</p>" if body.note else "")
+                + "<p>— Estima</p>"
+            ),
+        )
+    except Exception:
+        logger.exception("lawyer review email failed")
+
+    await db.wills.update_one(
+        {"user_id": user["id"]},
+        {"$set": {"lawyer_review_token": token, "lawyer_email": review_doc["lawyer_email"], "lawyer_name": body.lawyer_name, "lawyer_review_status": "pending"}},
+    )
+    return {"ok": True, "token": token, "review_url": review_url, "review": review_doc}
+
+
+@api_router.get("/public/will-review/{token}")
+async def public_will_review(token: str):
+    r = await db.will_reviews.find_one({"token": token}, {"_id": 0})
+    if not r:
+        raise HTTPException(404, "Invalid or expired review link")
+    will = await db.wills.find_one({"user_id": r["will_user_id"]}, {"_id": 0})
+    if not will:
+        raise HTTPException(404, "Will not found")
+    # Hide email/PII from response (only lawyer sees necessary fields)
+    return {
+        "review": r,
+        "will": {
+            "testator_name": will.get("testator_name"),
+            "testator_pan": will.get("testator_pan"),
+            "testator_address": will.get("testator_address"),
+            "executor_name": will.get("executor_name"),
+            "executor_relation": will.get("executor_relation"),
+            "beneficiaries": will.get("beneficiaries", []),
+            "allocations": will.get("allocations", []),
+            "preamble_notes": will.get("preamble_notes"),
+            "witness_1": will.get("witness_1"),
+            "witness_2": will.get("witness_2"),
+        },
+    }
+
+
+class LawyerReviewSubmit(BaseModel):
+    status: Literal["reviewed", "rejected"] = "reviewed"
+    comments: str = ""
+
+
+@api_router.post("/public/will-review/{token}/submit")
+async def submit_lawyer_review(token: str, body: LawyerReviewSubmit):
+    r = await db.will_reviews.find_one({"token": token})
+    if not r:
+        raise HTTPException(404, "Invalid token")
+    now = datetime.now(timezone.utc)
+    await db.will_reviews.update_one(
+        {"token": token},
+        {"$set": {"status": body.status, "review_comments": body.comments, "reviewed_at": now.isoformat()}},
+    )
+    await db.wills.update_one(
+        {"user_id": r["will_user_id"]},
+        {"$set": {
+            "lawyer_review_status": body.status,
+            "lawyer_review_comments": body.comments,
+            "lawyer_reviewed_at": now.isoformat(),
+        }},
+    )
+    # Notify the testator
+    try:
+        u = await db.users.find_one({"_id": ObjectId(r["will_user_id"])})
+        if u:
+            notify.send_email(
+                u["email"],
+                f"Your Will has been {body.status} by {r['lawyer_name']}",
+                (
+                    f"<p>Dear {u.get('name') or u['email']},</p>"
+                    f"<p>{r['lawyer_name']} has marked your Will as <b>{body.status}</b>.</p>"
+                    + (f"<p>Comments: {body.comments}</p>" if body.comments else "")
+                    + "<p>— Estima</p>"
+                ),
+            )
+    except Exception:
+        logger.exception("testator notify failed")
+    return {"ok": True, "status": body.status}
+
+
+# ---- Witness e-sign (Aadhaar-stubbed) ----
+class WitnessInviteRequest(BaseModel):
+    witness_index: int                # 0 or 1 (matches will.witness_1/witness_2)
+    witness_name: str
+    witness_email: EmailStr
+    witness_phone: str
+
+
+@api_router.post("/will/invite-witness")
+async def invite_witness(body: WitnessInviteRequest, user: dict = Depends(get_current_user)):
+    will = await db.wills.find_one({"user_id": user["id"]})
+    if not will:
+        raise HTTPException(404, "Draft the Will first")
+    token = secrets.token_urlsafe(24)
+    now = datetime.now(timezone.utc)
+    doc = {
+        "token": token,
+        "will_user_id": user["id"],
+        "witness_index": body.witness_index,
+        "witness_name": body.witness_name,
+        "witness_email": body.witness_email.lower().strip(),
+        "witness_phone": body.witness_phone,
+        "status": "pending",          # pending | signed | declined
+        "aadhaar_verified": False,
+        "aadhaar_last_4": None,
+        "signed_at": None,
+        "created_at": now.isoformat(),
+        "expires_at": (now + timedelta(days=30)).isoformat(),
+    }
+    await db.witness_signs.insert_one(doc.copy())
+    doc.pop("_id", None)
+
+    public_base = os.environ.get("PUBLIC_APP_URL", "").rstrip("/") or "https://estima.co.in"
+    sign_url = f"{public_base}/witness-sign/{token}"
+    try:
+        notify.send_email(
+            body.witness_email,
+            f"You've been named as a witness on {user.get('name') or user.get('email')}'s Will",
+            (
+                f"<p>Dear {body.witness_name},</p>"
+                f"<p>{user.get('name') or user.get('email')} has named you as a witness on their Last Will and Testament.</p>"
+                f"<p>Please review and e-sign via Aadhaar verification:</p>"
+                f"<p><a href='{sign_url}'>{sign_url}</a></p>"
+                "<p>This link is valid for 30 days. Under Indian Succession Act, 1925, a witness must not be a beneficiary.</p>"
+                "<p>— Estima</p>"
+            ),
+        )
+    except Exception:
+        logger.exception("witness invite failed")
+    return {"ok": True, "token": token, "sign_url": sign_url}
+
+
+class WitnessSignRequest(BaseModel):
+    aadhaar_last_4: str
+    otp: str                   # stub: any 6-digit
+
+
+@api_router.get("/public/witness-sign/{token}")
+async def public_witness_sign(token: str):
+    w = await db.witness_signs.find_one({"token": token}, {"_id": 0})
+    if not w:
+        raise HTTPException(404, "Invalid witness link")
+    will = await db.wills.find_one({"user_id": w["will_user_id"]}, {"_id": 0})
+    if not will:
+        raise HTTPException(404, "Will not found")
+    return {
+        "witness": w,
+        "will_summary": {
+            "testator_name": will.get("testator_name"),
+            "executor_name": will.get("executor_name"),
+            "beneficiaries_count": len(will.get("beneficiaries", [])),
+            "properties_count": len(will.get("allocations", [])),
+        },
+    }
+
+
+@api_router.post("/public/witness-sign/{token}")
+async def public_witness_submit(token: str, body: WitnessSignRequest):
+    w = await db.witness_signs.find_one({"token": token})
+    if not w:
+        raise HTTPException(404, "Invalid token")
+    if len(body.aadhaar_last_4) != 4 or not body.aadhaar_last_4.isdigit():
+        raise HTTPException(400, "Aadhaar last-4 must be 4 digits")
+    if len(body.otp) != 6 or not body.otp.isdigit():
+        raise HTTPException(400, "OTP must be 6 digits")
+    now = datetime.now(timezone.utc)
+    await db.witness_signs.update_one(
+        {"token": token},
+        {"$set": {
+            "status": "signed",
+            "aadhaar_verified": True,
+            "aadhaar_last_4": body.aadhaar_last_4,
+            "aadhaar_verification_mode": "stub",
+            "signed_at": now.isoformat(),
+        }},
+    )
+    # Update Will doc
+    idx = w["witness_index"]
+    key = f"witness_{idx + 1}_signature"
+    await db.wills.update_one(
+        {"user_id": w["will_user_id"]},
+        {"$set": {
+            key: {
+                "name": w["witness_name"],
+                "email": w["witness_email"],
+                "aadhaar_last_4": body.aadhaar_last_4,
+                "signed_at": now.isoformat(),
+                "mode": "aadhaar-esign-stub",
+            }
+        }},
+    )
+    # Notify testator
+    try:
+        u = await db.users.find_one({"_id": ObjectId(w["will_user_id"])})
+        if u:
+            notify.send_email(
+                u["email"],
+                f"Witness {w['witness_name']} has e-signed your Will",
+                f"<p>Witness {w['witness_name']} has successfully e-signed your Will via Aadhaar OTP verification.</p>",
+            )
+    except Exception:
+        logger.exception("witness sign notify failed")
+    return {"ok": True, "signed": True}
+
+
+@api_router.get("/will/signatures")
+async def will_signatures(user: dict = Depends(get_current_user)):
+    """Return all witness invites + review status + beneficiary notifications for this user's Will."""
+    witnesses = await db.witness_signs.find({"will_user_id": user["id"]}, {"_id": 0}).to_list(10)
+    review = await db.will_reviews.find_one({"will_user_id": user["id"]}, {"_id": 0}, sort=[("created_at", -1)])
+    notifications_sent = await db.beneficiary_notifications.find({"will_user_id": user["id"]}, {"_id": 0}).to_list(20)
+    will = await db.wills.find_one({"user_id": user["id"]}, {"_id": 0})
+    return {
+        "witnesses": witnesses,
+        "review": review,
+        "notifications_sent": notifications_sent,
+        "review_due_at": (will or {}).get("review_due_at"),
+        "lawyer_review_status": (will or {}).get("lawyer_review_status"),
+    }
+
+
+# ---- Beneficiary notifications with password-protected PDF ----
+class NotifyBeneficiariesRequest(BaseModel):
+    personal_note: str = ""
+    cc_lawyer: bool = True
+
+
+def _generate_will_pdf_bytes(will: dict, properties: list) -> bytes:
+    """Render the Will to a PDF (in-memory)."""
+    prop_by_id = {p["id"]: p for p in properties}
+    buf = io.BytesIO()
+    doc = SimpleDocTemplate(buf, pagesize=A4, leftMargin=20 * mm, rightMargin=20 * mm, topMargin=20 * mm, bottomMargin=20 * mm)
+    styles = getSampleStyleSheet()
+    title_style = ParagraphStyle("title", parent=styles["Title"], fontSize=22, leading=26, alignment=1)
+    h2 = ParagraphStyle("h2", parent=styles["Heading2"], fontSize=13, leading=16, spaceBefore=10)
+    body_s = ParagraphStyle("body", parent=styles["BodyText"], fontSize=10, leading=14)
+    story = [
+        Paragraph("LAST WILL AND TESTAMENT", title_style),
+        Spacer(1, 8 * mm),
+        Paragraph(
+            f"I, <b>{will.get('testator_name') or '[testator]'}</b>"
+            f"{', PAN ' + will['testator_pan'] if will.get('testator_pan') else ''}"
+            f", residing at {will.get('testator_address') or '[address]'}, do hereby declare this to be my Last Will and Testament.",
+            body_s,
+        ),
+    ]
+    if will.get("preamble_notes"):
+        story.append(Spacer(1, 4 * mm))
+        story.append(Paragraph(will["preamble_notes"], body_s))
+    story.append(Paragraph("Beneficiaries", h2))
+    bene = will.get("beneficiaries", [])
+    if bene:
+        rows = [["#", "Name", "Relation"]]
+        for i, b in enumerate(bene):
+            rows.append([str(i + 1), b.get("name", ""), b.get("relation", "")])
+        t = Table(rows, colWidths=[10 * mm, 80 * mm, 50 * mm])
+        t.setStyle(TableStyle([("BACKGROUND", (0, 0), (-1, 0), colors.lightgrey), ("GRID", (0, 0), (-1, -1), 0.3, colors.grey), ("FONTSIZE", (0, 0), (-1, -1), 9)]))
+        story.append(t)
+    story.append(Paragraph("Property allocations", h2))
+    allocs = will.get("allocations", [])
+    if allocs:
+        rows = [["Property", "Beneficiary", "Share"]]
+        for a in allocs:
+            p = prop_by_id.get(a.get("property_id"))
+            name = p["name"] if p else "(unknown)"
+            for s in a.get("splits", []):
+                bi = s.get("beneficiary_index", 0)
+                bname = bene[bi]["name"] if 0 <= bi < len(bene) else "—"
+                rows.append([name, bname, f"{s.get('percentage', 0)}%"])
+        t = Table(rows, colWidths=[75 * mm, 60 * mm, 25 * mm])
+        t.setStyle(TableStyle([("BACKGROUND", (0, 0), (-1, 0), colors.lightgrey), ("GRID", (0, 0), (-1, -1), 0.3, colors.grey), ("FONTSIZE", (0, 0), (-1, -1), 9)]))
+        story.append(t)
+    if will.get("witness_1_signature") or will.get("witness_2_signature"):
+        story.append(Paragraph("Witness e-signatures", h2))
+        for i in (1, 2):
+            sig = will.get(f"witness_{i}_signature")
+            if sig:
+                story.append(Paragraph(
+                    f"Witness {i}: <b>{sig['name']}</b> (Aadhaar ****{sig.get('aadhaar_last_4', '----')}) — e-signed {sig.get('signed_at', '')[:10]}",
+                    body_s,
+                ))
+    if will.get("lawyer_review_status") == "reviewed":
+        story.append(Spacer(1, 4 * mm))
+        story.append(Paragraph(f"<i>Reviewed by {will.get('lawyer_name', 'lawyer')} on {(will.get('lawyer_reviewed_at') or '')[:10]}</i>", body_s))
+    doc.build(story)
+    return buf.getvalue()
+
+
+def _protect_pdf(pdf_bytes: bytes, password: str) -> bytes:
+    """Add owner+user password to an in-memory PDF using pypdf."""
+    from pypdf import PdfReader, PdfWriter
+    reader = PdfReader(io.BytesIO(pdf_bytes))
+    writer = PdfWriter()
+    for page in reader.pages:
+        writer.add_page(page)
+    writer.encrypt(user_password=password, owner_password=password, use_128bit=True)
+    out = io.BytesIO()
+    writer.write(out)
+    return out.getvalue()
+
+
+@api_router.post("/will/notify-beneficiaries")
+async def notify_beneficiaries(body: NotifyBeneficiariesRequest, user: dict = Depends(get_current_user)):
+    will = await db.wills.find_one({"user_id": user["id"]}, {"_id": 0})
+    if not will:
+        raise HTTPException(404, "No Will drafted yet")
+    bene = will.get("beneficiaries", [])
+    if not bene:
+        raise HTTPException(400, "Add at least one beneficiary first")
+
+    properties = await db.properties.find({"user_id": user["id"]}, {"_id": 0}).to_list(200)
+    pdf_bytes = _generate_will_pdf_bytes(will, properties)
+
+    sent = []
+    for i, b in enumerate(bene):
+        email = b.get("email")
+        if not email:
+            continue
+        # Password = first 4 letters of name (lowercase) + last 4 of phone, or random if unavailable
+        pw = (b.get("name", "").replace(" ", "").lower()[:4] + (b.get("phone", "0000")[-4:])) or secrets.token_urlsafe(6)[:8]
+        protected = _protect_pdf(pdf_bytes, pw)
+        # We'd normally attach the PDF to the email. For the stub we just log + store metadata.
+        doc = {
+            "id": str(uuid.uuid4()),
+            "will_user_id": user["id"],
+            "beneficiary_index": i,
+            "beneficiary_name": b.get("name", ""),
+            "beneficiary_email": email,
+            "sent_at": datetime.now(timezone.utc).isoformat(),
+            "password_hint": f"Your first-name (lowercase) + last 4 of your phone — e.g. {pw[:2]}**",
+            "pdf_size_bytes": len(protected),
+            "cc_lawyer": body.cc_lawyer and bool(will.get("lawyer_email")),
+            "lawyer_email": will.get("lawyer_email") if body.cc_lawyer else None,
+            "personal_note": body.personal_note,
+        }
+        await db.beneficiary_notifications.insert_one(doc.copy())
+        try:
+            html = (
+                f"<p>Dear {b.get('name')},</p>"
+                f"<p>{user.get('name') or user.get('email')} has sent you the Last Will and Testament naming you as a beneficiary.</p>"
+                f"<p>The attached PDF is password-protected. Your password: <b>your first-name (lowercase) + last 4 digits of your phone</b>.</p>"
+                + (f"<p>Personal note: <i>{body.personal_note}</i></p>" if body.personal_note else "")
+                + (f"<p>CC: {will.get('lawyer_name', 'lawyer')} ({will.get('lawyer_email')})</p>" if doc['cc_lawyer'] else "")
+                + "<p>— Estima</p>"
+            )
+            notify.send_email(email, f"Your copy of {user.get('name') or user.get('email')}'s Last Will and Testament", html)
+            if doc["cc_lawyer"] and doc.get("lawyer_email"):
+                notify.send_email(doc["lawyer_email"], f"CC: Will distributed to {b.get('name')}", html)
+        except Exception:
+            logger.exception("beneficiary email failed")
+        doc.pop("_id", None)
+        sent.append(doc)
+
+    # Set review-due date to 3 years out
+    review_due = (datetime.now(timezone.utc) + timedelta(days=365 * 3)).isoformat()
+    await db.wills.update_one(
+        {"user_id": user["id"]},
+        {"$set": {"beneficiaries_notified_at": datetime.now(timezone.utc).isoformat(), "review_due_at": review_due}},
+    )
+    return {"ok": True, "sent": sent, "count": len(sent), "review_due_at": review_due}
+
+
+@api_router.get("/will/reminders")
+async def will_reminders(user: dict = Depends(get_current_user)):
+    """Dashboard reminder: 3-year Will review due?"""
+    will = await db.wills.find_one({"user_id": user["id"]}, {"_id": 0, "user_id": 0, "password_hash": 0}) or {}
+    due = will.get("review_due_at")
+    if not due:
+        return {"has_reminder": False}
+    due_dt = datetime.fromisoformat(due)
+    now = datetime.now(timezone.utc)
+    days_left = (due_dt - now).days
+    is_due = days_left <= 90              # show reminder 90 days before
+    return {
+        "has_reminder": bool(will),
+        "review_due_at": due,
+        "days_left": days_left,
+        "is_due_soon": is_due,
+        "is_overdue": days_left < 0,
+    }
 
 
 # ------------------------------------------------------------

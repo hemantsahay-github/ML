@@ -3,6 +3,7 @@ import api, { formatApiErrorDetail } from "../lib/api";
 import { toast } from "sonner";
 import { inr } from "../lib/format";
 import { Plus, Trash, PencilSimple, X, MapPin, Megaphone, Sparkle, Copy, ArrowSquareOut } from "@phosphor-icons/react";
+import NearbyMarketCard from "../components/NearbyMarketCard";
 
 const blank = {
   name: "",
@@ -293,6 +294,9 @@ export default function Properties() {
                       <Megaphone size={12} weight="duotone" /> List for rent in 1 click
                     </button>
                   )}
+                  <div onClick={(e) => e.stopPropagation()}>
+                    <NearbyMarketCard property={p} />
+                  </div>
                 </div>
               ))}
             </div>
