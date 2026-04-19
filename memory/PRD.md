@@ -99,3 +99,35 @@ Personal property buying options and decision making and managing — comparing 
 - Added to Portfolio, Compare, Calculators, Referrals, Advisor (compact) pages.
 
 **Tests:** iteration_6.json — 30/30 backend, 100% frontend.
+
+## 2026-04-18 — Final batch: Google Auth · Tenants · Receipts · Builder Plan · Feedback · Demo videos
+- POST /api/auth/google/session (Emergent OAuth fallback)
+- Tenants CRUD + rent receipts (PDF) + email option
+- Builder plan calculator (CLP · 10:90 · 20:80 · subvention)
+- Floating feedback widget (FAB + admin moderation at /api/admin/feedback)
+- Admin extend_trial action
+- Landing demo videos section (placeholder → 'Coming soon')
+- Notifications module (Resend + Twilio **MOCKED** — logs to stdout)
+- **Tests:** iteration_7.json — 24/24 backend, frontend 100% (after rick-roll fix).
+
+## 2026-04-18 — Long-game math + Under-construction + Projects directory
+**New calculators:**
+- POST /api/calc/wealth-narrative — 25-year buy-vs-rent with tier-1 premium (+15%), rent inflation, EMI expiry, generational-transfer legacy bonus. Returns crossover_year + narratives array.
+- POST /api/calc/rent-for-cashflow — finds rent needed for owned property to turn CF-positive in N years; 15-year trajectory.
+- POST /api/calc/prepayment-analysis — 4 scenarios (part / full / invest / part+invest-savings) with winner detection. Takes rental income + maintenance + tax for owned-rental cashflow delta.
+
+**Extended calculators:**
+- /api/calc/loan-optimizer now supports `under_construction=true` with `possession_months`, `disbursement_schedule` (clp|linear), `subvention_by_builder`. Grid rows include `pre_emi_total` and `pre_emi_monthly`.
+- /api/calc/resale-estimate accepts `min_rent_monthly`, `current_rent_monthly` (uses avg) and `misc_expenses_inr` (one-time renovation/repair). Response includes `average_rent_used` and `misc_expenses`.
+
+**Upcoming projects directory:**
+- /app/backend/city_projects.py — 15 curated tier-1 projects (BLR/MUM/NCR/HYD/PUN/CHN/KOL/AMD) with builder, possession, config, ticket, RERA, amenities.
+- GET /api/builder-projects?city=&area=&status= — filterable; merges curated + community.
+- POST /api/builder-projects/community (auth) — user-submitted projects.
+- New /app/projects page with filter bar + submit modal.
+
+**Landing page:**
+- Added "Why buying wins over 25 years" teaser (4 cards: finite land / rent compounding / EMI expiry / generational transfer) with CTA to Wealth Narrative calculator.
+- Demo videos section no longer links to YouTube rick-roll — now marked "Coming soon".
+
+**Tests:** iteration_8.json — 12/12 backend, 100% frontend on all new flows.
