@@ -1515,70 +1515,84 @@ class LoanOptimizerRequest(BaseModel):
     analysis_years: int = 10
 
 
+def _optimizer_pre_emi(body, loan: float, months_build: int, r_m: float):
+    """Pre-EMI outflow during construction (builder-subvention aware)."""
+    if not (body.under_construction and months_build > 0 and loan > 0):
+        return 0.0, 0.0
+    avg_disbursed = loan * 0.5
+    per_month = avg_disbursed * r_m
+    if body.subvention_by_builder:
+        return 0.0, 0.0
+    return per_month, per_month * months_build
+
+
+def _optimizer_horizon_projection(body, loan: float, emi: float, monthly_rent: float, costs_monthly: float, pre_emi_total: float):
+    """Project net equity + growth metrics at the analysis horizon."""
+    years = body.analysis_years
+    r_grow = 0.07
+    final_value = body.property_price * ((1 + body.appreciation_pct / 100) ** years)
+    cum_rent = sum(monthly_rent * 12 * ((1 + r_grow) ** (y - 1)) for y in range(1, years + 1))
+    cum_emi_paid = emi * 12 * min(years, body.loan_tenure_years)
+    out_loan_at_y = _loan_balance(loan, body.loan_rate, body.loan_tenure_years, min(years * 12, body.loan_tenure_years * 12))
+    costs_total = costs_monthly * 12 * years
+    net_equity = final_value - out_loan_at_y + cum_rent - cum_emi_paid - pre_emi_total - costs_total
+    return {
+        "years": years,
+        "r_grow": r_grow,
+        "final_value": final_value,
+        "out_loan_at_y": out_loan_at_y,
+        "net_equity": net_equity,
+    }
+
+
+def _optimizer_xirr_for_dp(body, dp: float, loan: float, emi: float, monthly_rent: float,
+                           costs_monthly: float, pre_emi_per_month: float, months_build: int,
+                           horizon) -> float:
+    """Build cashflow series and compute XIRR for a single DP% scenario."""
+    cfs = [(0, -dp)]
+    if body.under_construction and pre_emi_per_month > 0:
+        for m in range(1, months_build + 1):
+            cfs.append((m * 30, -pre_emi_per_month))
+    for y in range(1, horizon["years"] + 1):
+        yearly_rent = monthly_rent * 12 * ((1 + horizon["r_grow"]) ** (y - 1))
+        yearly_emi = emi * 12 if y * 12 <= body.loan_tenure_years * 12 else 0
+        net = yearly_rent - yearly_emi - costs_monthly * 12
+        cfs.append((y * 365, net))
+    cfs.append((horizon["years"] * 365, horizon["final_value"] - horizon["out_loan_at_y"]))
+    try:
+        return _xirr(cfs) * 100
+    except Exception:
+        return 0.0
+
+
 @api_router.post("/calc/loan-optimizer")
 async def loan_optimizer(body: LoanOptimizerRequest):
     # If monthly_rent missing, derive from yield
     monthly_rent = body.monthly_rent if body.monthly_rent > 0 else body.property_price * (body.rental_yield_pct / 100) / 12
-
     costs_monthly = body.maintenance_monthly + body.property_tax_yearly / 12
     grid = []
     months_build = max(body.possession_months if body.under_construction else 0, 0)
     r_m = (body.loan_rate / 100) / 12
-    avg_frac = 0.5
 
     for pct in range(5, 101, 5):
         dp = body.property_price * pct / 100
         loan = body.property_price - dp
         emi = _emi(loan, body.loan_rate, body.loan_tenure_years)
 
-        pre_emi_total = 0.0
-        pre_emi_per_month = 0.0
-        if body.under_construction and months_build > 0 and loan > 0:
-            avg_disbursed = loan * avg_frac
-            pre_emi_per_month = avg_disbursed * r_m
-            pre_emi_total = pre_emi_per_month * months_build
-            if body.subvention_by_builder:
-                pre_emi_total = 0.0
-                pre_emi_per_month = 0.0
+        pre_emi_per_month, pre_emi_total = _optimizer_pre_emi(body, loan, months_build, r_m)
 
         cashflow_after_possession = monthly_rent - emi - costs_monthly
         annual_cashflow = cashflow_after_possession * 12
         roi_annual = (annual_cashflow / dp * 100) if dp > 0 else 0
 
-        # --- 10-year LEVERAGE ROI ---
-        years = body.analysis_years
-        final_value = body.property_price * ((1 + body.appreciation_pct / 100) ** years)
-        # cumulative rent (growing at 7% p.a. as rough proxy)
-        cum_rent = 0
-        r_grow = 0.07
-        for y in range(1, years + 1):
-            cum_rent += monthly_rent * 12 * ((1 + r_grow) ** (y - 1))
-        cum_emi_paid = emi * 12 * min(years, body.loan_tenure_years)
-        out_loan_at_y = _loan_balance(loan, body.loan_rate, body.loan_tenure_years, min(years * 12, body.loan_tenure_years * 12))
-        # Net equity at year N = final_value - outstanding_loan + cum_rent - cum_emi - pre_emi_total - costs_total
-        costs_total = costs_monthly * 12 * years
-        net_equity = final_value - out_loan_at_y + cum_rent - cum_emi_paid - pre_emi_total - costs_total
-        # Leverage ROI = net_equity / dp (total over horizon)
+        horizon = _optimizer_horizon_projection(body, loan, emi, monthly_rent, costs_monthly, pre_emi_total)
+        net_equity = horizon["net_equity"]
+        final_value = horizon["final_value"]
         leverage_roi_total_pct = (net_equity / dp * 100) if dp > 0 else 0
-        # CAGR
-        cagr_pct = ((net_equity / dp) ** (1 / years) - 1) * 100 if dp > 0 and net_equity > 0 else 0
+        cagr_pct = ((net_equity / dp) ** (1 / horizon["years"]) - 1) * 100 if dp > 0 and net_equity > 0 else 0
 
-        # XIRR-based leverage return
-        cfs = [(0, -dp)]
-        if body.under_construction and pre_emi_per_month > 0:
-            for m in range(1, months_build + 1):
-                cfs.append((m * 30, -pre_emi_per_month))
-        for y in range(1, years + 1):
-            yearly_rent = monthly_rent * 12 * ((1 + r_grow) ** (y - 1))
-            yearly_emi = emi * 12 if y * 12 <= body.loan_tenure_years * 12 else 0
-            yearly_costs = costs_monthly * 12
-            net = yearly_rent - yearly_emi - yearly_costs
-            cfs.append((y * 365, net))
-        cfs.append((years * 365, final_value - out_loan_at_y))
-        try:
-            xirr_pct = _xirr(cfs) * 100
-        except Exception:
-            xirr_pct = 0
+        xirr_pct = _optimizer_xirr_for_dp(body, dp, loan, emi, monthly_rent, costs_monthly,
+                                          pre_emi_per_month, months_build, horizon)
 
         grid.append({
             "down_payment_pct": pct,
@@ -3697,8 +3711,8 @@ async def admin_legacy_transfer(body: LegacyTransferRequest, user: dict = Depend
 # ------------------------------------------------------------
 # Demo login (one-click) — seeds a demo user + sample data
 # ------------------------------------------------------------
-DEMO_EMAIL = "demo@estima.com"
-DEMO_PASSWORD = "Demo@Estima2026"
+DEMO_EMAIL = os.environ.get("DEMO_EMAIL", "demo@estima.com")
+DEMO_PASSWORD = os.environ.get("DEMO_PASSWORD") or secrets.token_urlsafe(24)
 
 
 async def _ensure_demo_user():

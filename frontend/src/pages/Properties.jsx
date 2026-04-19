@@ -664,7 +664,7 @@ function ListingModal({ property, onClose }) {
               {form.amenities.length > 0 && (
                 <div className="flex flex-wrap gap-2 mt-3">
                   {form.amenities.map((a, i) => (
-                    <span key={i} className="text-xs px-2 py-1 bg-[hsl(var(--muted))] inline-flex items-center gap-1">
+                    <span key={`${a}-${i}`} className="text-xs px-2 py-1 bg-[hsl(var(--muted))] inline-flex items-center gap-1">
                       {a}
                       <button onClick={() => delAmenity(i)} className="hover:text-destructive"><X size={10} /></button>
                     </span>

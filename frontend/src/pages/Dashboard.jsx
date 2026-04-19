@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import { Link } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 import api from "../lib/api";
@@ -12,22 +12,22 @@ export default function Dashboard() {
   const [watched, setWatched] = useState([]);
   const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
-    (async () => {
-      try {
-        const [pRes, poRes, wRes] = await Promise.all([
-          api.get("/properties"),
-          api.get("/portfolio/summary"),
-          api.get("/projects/watched").catch(() => ({ data: { projects: [] } })),
-        ]);
-        setProps(pRes.data);
-        setPortfolio(poRes.data);
-        setWatched(wRes.data.projects || []);
-      } finally {
-        setLoading(false);
-      }
-    })();
+  const loadAll = useCallback(async () => {
+    try {
+      const [pRes, poRes, wRes] = await Promise.all([
+        api.get("/properties"),
+        api.get("/portfolio/summary"),
+        api.get("/projects/watched").catch((e) => { console.debug("watched load failed", e); return { data: { projects: [] } }; }),
+      ]);
+      setProps(pRes.data);
+      setPortfolio(poRes.data);
+      setWatched(wRes.data.projects || []);
+    } finally {
+      setLoading(false);
+    }
   }, []);
+
+  useEffect(() => { loadAll(); }, [loadAll]);
 
   const candidates = props.filter((p) => (p.status || "evaluating") === "evaluating");
   const totalValue = candidates.reduce((a, p) => a + (p.price || 0), 0);

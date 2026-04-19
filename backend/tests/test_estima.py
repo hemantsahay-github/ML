@@ -7,7 +7,7 @@ import uuid
 BASE_URL = os.environ.get("REACT_APP_BACKEND_URL", "").rstrip("/")
 
 TEST_EMAIL = f"TEST_{uuid.uuid4().hex[:8]}@estima.com"
-TEST_PASSWORD = "Test@1234"
+TEST_PASSWORD = os.environ.get("TEST_USER_PASSWORD", "Test@1234")
 TEST_NAME = "Test User"
 
 session = requests.Session()  # unauthenticated

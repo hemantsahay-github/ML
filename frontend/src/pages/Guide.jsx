@@ -289,7 +289,7 @@ export default function Guide() {
           {FEATURES.map((f, i) => {
             const Icon = f.icon;
             return (
-              <div key={i} className="bg-card p-8" data-testid={`guide-feature-${i}`}>
+              <div key={f.title} className="bg-card p-8" data-testid={`guide-feature-${i}`}>
                 <div className="flex items-start gap-5">
                   <div className="h-12 w-12 border hairline flex items-center justify-center text-[hsl(var(--secondary))] shrink-0">
                     <Icon size={22} weight="duotone" />
@@ -303,8 +303,8 @@ export default function Guide() {
                     </div>
                     <p className="text-muted-foreground leading-relaxed mb-4">{f.body}</p>
                     <ul className="space-y-2">
-                      {f.tips.map((t, j) => (
-                        <li key={j} className="flex gap-2 text-sm">
+                      {f.tips.map((t) => (
+                        <li key={t} className="flex gap-2 text-sm">
                           <span className="text-[hsl(var(--secondary))] font-serif">·</span>
                           <span className="text-muted-foreground">{t}</span>
                         </li>
@@ -329,7 +329,7 @@ export default function Guide() {
             const open = openFaq === i;
             return (
               <button
-                key={i}
+                key={f.q}
                 onClick={() => setOpenFaq(open ? null : i)}
                 className="w-full text-left p-5 hover:bg-[hsl(var(--muted))] transition"
                 data-testid={`faq-${i}`}

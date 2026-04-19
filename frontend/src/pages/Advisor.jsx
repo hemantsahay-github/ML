@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef } from "react";
+import { useEffect, useState, useRef, useCallback } from "react";
 import api, { formatApiErrorDetail } from "../lib/api";
 import { toast } from "sonner";
 import { PaperPlaneTilt, Sparkle, User } from "@phosphor-icons/react";
@@ -19,14 +19,16 @@ export default function Advisor() {
   const [properties, setProperties] = useState([]);
   const bottomRef = useRef(null);
 
-  useEffect(() => {
-    (async () => {
-      try {
-        const { data } = await api.get("/properties");
-        setProperties(data);
-      } catch {}
-    })();
+  const loadProperties = useCallback(async () => {
+    try {
+      const { data } = await api.get("/properties");
+      setProperties(data);
+    } catch (e) {
+      console.debug("advisor: properties load failed", e);
+    }
   }, []);
+
+  useEffect(() => { loadProperties(); }, [loadProperties]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -35,7 +37,8 @@ export default function Advisor() {
   const ask = async (q) => {
     const msg = (q ?? question).trim();
     if (!msg) return;
-    setMessages((m) => [...m, { role: "user", text: msg }]);
+    const userKey = (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : `u-${Date.now()}`);
+    setMessages((m) => [...m, { _k: userKey, role: "user", text: msg }]);
     setQuestion("");
     setLoading(true);
     try {
@@ -46,17 +49,19 @@ export default function Advisor() {
         session_id: sessionId,
       });
       if (!sessionId) setSessionId(data.session_id);
-      setMessages((m) => [...m, { role: "assistant", text: data.reply }]);
+      const aKey = (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : `a-${Date.now()}`);
+      setMessages((m) => [...m, { _k: aKey, role: "assistant", text: data.reply }]);
     } catch (e) {
+      const eKey = (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : `e-${Date.now()}`);
       if (e.response?.status === 402) {
         toast.error("Pro plan required", {
           description: "Upgrade to unlock the AI advisor.",
           action: { label: "See plans", onClick: () => (window.location.href = "/pricing") },
         });
-        setMessages((m) => [...m, { role: "assistant", text: "Pro plan required — head to Pricing to unlock the advisor. Your trial may have ended." }]);
+        setMessages((m) => [...m, { _k: eKey, role: "assistant", text: "Pro plan required — head to Pricing to unlock the advisor. Your trial may have ended." }]);
       } else {
         toast.error(formatApiErrorDetail(e.response?.data?.detail));
-        setMessages((m) => [...m, { role: "assistant", text: "The advisor stumbled. Try again in a moment." }]);
+        setMessages((m) => [...m, { _k: eKey, role: "assistant", text: "The advisor stumbled. Try again in a moment." }]);
       }
     } finally {
       setLoading(false);
@@ -102,7 +107,7 @@ export default function Advisor() {
 
       <div className="flex-1 space-y-5 mb-6" data-testid="advisor-messages">
         {messages.map((m, i) => (
-          <div key={i} className={`flex gap-4 ${m.role === "user" ? "justify-end" : ""}`}>
+          <div key={m._k || `msg-${i}`} className={`flex gap-4 ${m.role === "user" ? "justify-end" : ""}`}>
             {m.role === "assistant" && (
               <div className="h-8 w-8 shrink-0 border hairline flex items-center justify-center text-[hsl(var(--secondary))]">
                 <Sparkle size={16} weight="duotone" />

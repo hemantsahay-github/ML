@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import { Link } from "react-router-dom";
 import api from "../lib/api";
 import { inr, inrFull } from "../lib/format";
@@ -37,25 +37,27 @@ export default function Portfolio() {
   const [vsMarkets, setVsMarkets] = useState(null);
   const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
-    (async () => {
+  const loadPortfolio = useCallback(async () => {
+    try {
+      const [sRes, tRes] = await Promise.all([
+        api.get("/portfolio/summary"),
+        api.get("/portfolio/timeline"),
+      ]);
+      setSummary(sRes.data);
+      setTimeline(tRes.data);
+      // vs investments only makes sense when there are dated owned properties
       try {
-        const [sRes, tRes] = await Promise.all([
-          api.get("/portfolio/summary"),
-          api.get("/portfolio/timeline"),
-        ]);
-        setSummary(sRes.data);
-        setTimeline(tRes.data);
-        // vs investments only makes sense when there are dated owned properties
-        try {
-          const { data } = await api.post("/portfolio/vs-investments", {});
-          if (data.series && data.series.length > 0) setVsMarkets(data);
-        } catch {}
-      } finally {
-        setLoading(false);
+        const { data } = await api.post("/portfolio/vs-investments", {});
+        if (data.series && data.series.length > 0) setVsMarkets(data);
+      } catch (e) {
+        console.debug("portfolio/vs-investments unavailable", e);
       }
-    })();
+    } finally {
+      setLoading(false);
+    }
   }, []);
+
+  useEffect(() => { loadPortfolio(); }, [loadPortfolio]);
 
   if (loading)
     return (
@@ -292,8 +294,8 @@ export default function Portfolio() {
                       stroke="hsl(var(--background))"
                       strokeWidth={2}
                     >
-                      {summary.items.map((_, i) => (
-                        <Cell key={i} fill={COLORS[i % COLORS.length]} />
+                      {summary.items.map((it, i) => (
+                        <Cell key={it.id || `cell-${i}`} fill={COLORS[i % COLORS.length]} />
                       ))}
                     </Pie>
                     <Tooltip formatter={(v) => inrFull(v)} />

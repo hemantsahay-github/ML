@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import { useParams, Link } from "react-router-dom";
 import axios from "axios";
 import { inr } from "../lib/format";
@@ -27,18 +27,18 @@ export default function SharedReport() {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
-    (async () => {
-      try {
-        const { data } = await axios.get(`${BACKEND_URL}/api/shares/${id}`);
-        setData(data);
-      } catch (e) {
-        setError(e.response?.status === 404 ? "This report doesn't exist or has been removed." : "Couldn't load report.");
-      } finally {
-        setLoading(false);
-      }
-    })();
+  const loadReport = useCallback(async () => {
+    try {
+      const { data: res } = await axios.get(`${BACKEND_URL}/api/shares/${id}`);
+      setData(res);
+    } catch (e) {
+      setError(e.response?.status === 404 ? "This report doesn't exist or has been removed." : "Couldn't load report.");
+    } finally {
+      setLoading(false);
+    }
   }, [id]);
+
+  useEffect(() => { loadReport(); }, [loadReport]);
 
   if (loading) {
     return (

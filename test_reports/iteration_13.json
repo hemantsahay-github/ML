@@ -1,0 +1,40 @@
+{
+  "summary": "Iteration 13 regression after code-quality batch (DEMO_PASSWORD env, useCallback refactor, loan_optimizer helper extraction, NearbyMarketCard sub-components, expires_at enforcement). 19/19 pytest passing (loan_optimizer grid=20 rows, summary keys intact, leverage_xirr_pct >=0 everywhere, subvention => pre_emi=0 across all 20 rows, demo-login returns is_demo:true, fake Google session_id => 401, invalid public will-review/witness-sign tokens => 404, portfolio summary/timeline OK, calc/emi OK, market/nearby OK). Frontend smoke: demo login redirects to /app, zero React key warnings on Dashboard/Portfolio/Will/Tenants/Calculators/Advisor/Properties/Referrals, XIRR add-row grows row count cleanly (8 -> 12), /lawyer-review/:bad and /witness-sign/:bad show 'Invalid or expired' error states. Google Auth href on /login correctly targets auth.emergentagent.com with redirect to {origin}/app (URL-encoded as expected by browser).",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Portfolio", "issues": ["Recharts prints 'width(-1) height(-1)' warnings repeatedly when a chart container is rendered at 0x0 (likely a hidden tab). Non-blocking but noisy in console."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration13.py",
+    "/app/test_reports/pytest/iteration_13.xml"
+  ],
+  "action_items": [
+    "(Optional) Guard Recharts ResponsiveContainer with a minHeight/minWidth or conditional render when its parent is not yet laid out to silence 'width(-1) height(-1)' warnings on Portfolio page.",
+    "(Optional, carry-over from iter 12) data-testid wrapper on LawyerReview / WitnessSign error-state branch still relies on text-only verification."
+  ],
+  "critical_code_review_comments": [
+    "loan_optimizer helpers (_optimizer_pre_emi, _optimizer_horizon_projection, _optimizer_xirr_for_dp) are clean, single-purpose and produce identical grid shape/values; main handler is now a thin orchestrator. Good refactor.",
+    "DEMO_PASSWORD now reads os.environ.get('DEMO_PASSWORD') or secrets.token_urlsafe(24) — safe fallback. Verified env var is set in /app/backend/.env so demo-login works.",
+    "public/will-review and public/witness-sign GET + submit routes now parse expires_at via datetime.fromisoformat and return 410 when past-due. Branch tested implicitly via invalid token 404 path; expired-path requires DB fixture to trigger and was not directly exercised.",
+    "/app/backend/server.py is still ~4851 lines — modularization (routers per domain) remains pending from iteration 12.",
+    "Frontend Login.jsx google redirect is built with encodeURIComponent(window.location.origin + '/app') which renders in the anchor as URL-encoded %2Fapp — correct and matches spec.",
+    "AuthContext skipping /auth/me when URL contains a session_id fragment is correct (prevents racing Google-session exchange)."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iteration13.py"
+  ],
+  "success_rate": {"backend": "100% (19/19)", "frontend": "100% smoke (8 routes loaded, 0 key warnings, 0 page errors beyond expected 401 on /auth/me pre-login)"},
+  "test_credentials": "demo via POST /api/auth/demo-login (cookies-based); admin admin@estima.com / Admin@123",
+  "seed_data_creation": "None — iteration 13 is pure regression. Relies on demo-login's pre-seeded 4 properties.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Loan optimizer POST /api/calc/loan-optimizer returns grid length=20 (5..100% step 5). Under construction + subvention_by_builder=true forces pre_emi_monthly and pre_emi_total to 0 on every grid row. Google session endpoint is POST /api/auth/google/session {session_id} — NOT GET (returns 405 for GET). Portfolio 'vs-markets' in UI is served by POST /api/portfolio/vs-investments (there is no /portfolio/vs-markets route). Demo pre-seeded routes live under /app/<page>. Public will routes /lawyer-review/:token and /witness-sign/:token render 'Invalid or expired' text on bad token (status 404 from API, shown as toast + centered message).",
+  "rca of the issue": "N/A — no regressions. Code-quality batch verified clean."
+}

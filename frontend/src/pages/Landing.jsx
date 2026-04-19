@@ -268,10 +268,10 @@ export default function Landing() {
                 length: "0:48",
                 body: "Claude Sonnet 4.5 reading your numbers and returning a verdict in plain language.",
               },
-            ].map((v, i) => (
+            ].map((v) => (
               <div
-                key={i}
-                data-testid={`demo-video-${i}`}
+                key={v.title}
+                data-testid={`demo-video-${v.title.toLowerCase().replace(/\s+/g, "-").slice(0, 30)}`}
                 className="card-flat overflow-hidden group"
               >
                 <div className="aspect-video relative bg-[hsl(var(--muted))] overflow-hidden flex items-center justify-center">
@@ -318,8 +318,8 @@ export default function Landing() {
                 { h: "Rent compounds 8% a year", p: "₹30k today ≈ ₹2L in 25 years. That money never comes back." },
                 { h: "EMI has an expiry date", p: "After year 20 every rupee that used to go to the bank compounds into your net worth." },
                 { h: "Generational tax-free transfer", p: "Inheritance resets India's capital-gains clock to zero. Equity and MFs don't." },
-              ].map((c, i) => (
-                <div key={i} className="card-flat p-5" data-testid={`why-buy-${i}`}>
+              ].map((c) => (
+                <div key={c.h} className="card-flat p-5" data-testid={`why-buy-${c.h.toLowerCase().replace(/\s+/g, "-").slice(0, 30)}`}>
                   <div className="font-serif text-xl mb-2">{c.h}</div>
                   <p className="text-sm text-muted-foreground leading-relaxed">{c.p}</p>
                 </div>

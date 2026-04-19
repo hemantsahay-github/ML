@@ -39,7 +39,9 @@ export default function Referrals() {
       try {
         await navigator.share(payload);
         return;
-      } catch {}
+      } catch (e) {
+        console.debug("navigator.share cancelled/failed", e);
+      }
     }
     copyLink();
   };
@@ -130,7 +132,7 @@ export default function Referrals() {
             </thead>
             <tbody>
               {data.events.map((e, i) => (
-                <tr key={i} className="border-b hairline last:border-0">
+                <tr key={e.created_at ? `${e.created_at}-${i}` : `evt-${i}`} className="border-b hairline last:border-0">
                   <td className="p-4 text-xs text-muted-foreground">
                     {new Date(e.created_at).toLocaleString()}
                   </td>

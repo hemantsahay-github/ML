@@ -1,8 +1,12 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import api, { formatApiErrorDetail } from "../lib/api";
 import { toast } from "sonner";
 import { FilePdf, Plus, Trash, UserPlus, FloppyDisk, ShieldCheck, Sparkle, Gavel, PaperPlaneTilt, Bell, CheckCircle, Clock } from "@phosphor-icons/react";
 import Disclaimer from "../components/Disclaimer";
+
+function newBene() {
+  return { _k: (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : `b-${Date.now()}-${Math.random()}`), name: "", relation: "", email: "", phone: "", notes: "" };
+}
 
 export default function Will() {
   const [form, setForm] = useState({
@@ -13,7 +17,7 @@ export default function Will() {
     executor_relation: "",
     witness_1: "",
     witness_2: "",
-    beneficiaries: [{ name: "", relation: "", email: "", phone: "", notes: "" }],
+    beneficiaries: [newBene()],
     allocations: [],
     preamble_notes: "",
   });
@@ -21,43 +25,44 @@ export default function Will() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
 
-  useEffect(() => {
-    (async () => {
-      try {
-        const [w, p] = await Promise.all([api.get("/will"), api.get("/properties")]);
-        setProperties(p.data.filter((x) => x.status === "owned" || x.status === "evaluating"));
-        if (w.data.exists) {
-          setForm({
-            testator_name: w.data.testator_name || "",
-            testator_pan: w.data.testator_pan || "",
-            testator_address: w.data.testator_address || "",
-            executor_name: w.data.executor_name || "",
-            executor_relation: w.data.executor_relation || "",
-            witness_1: w.data.witness_1 || "",
-            witness_2: w.data.witness_2 || "",
-            beneficiaries: w.data.beneficiaries?.length
-              ? w.data.beneficiaries.map((b) => ({
-                  name: b.name || "",
-                  relation: b.relation || "",
-                  email: b.email || "",
-                  phone: b.phone || "",
-                  notes: b.notes || "",
-                }))
-              : [{ name: "", relation: "", email: "", phone: "", notes: "" }],
-            allocations: w.data.allocations || [],
-            preamble_notes: w.data.preamble_notes || "",
-          });
-        }
-      } catch (e) {
-        toast.error(formatApiErrorDetail(e.response?.data?.detail));
-      } finally {
-        setLoading(false);
+  const loadInitial = useCallback(async () => {
+    try {
+      const [w, p] = await Promise.all([api.get("/will"), api.get("/properties")]);
+      setProperties(p.data.filter((x) => x.status === "owned" || x.status === "evaluating"));
+      if (w.data.exists) {
+        setForm({
+          testator_name: w.data.testator_name || "",
+          testator_pan: w.data.testator_pan || "",
+          testator_address: w.data.testator_address || "",
+          executor_name: w.data.executor_name || "",
+          executor_relation: w.data.executor_relation || "",
+          witness_1: w.data.witness_1 || "",
+          witness_2: w.data.witness_2 || "",
+          beneficiaries: w.data.beneficiaries?.length
+            ? w.data.beneficiaries.map((b) => ({
+                ...newBene(),
+                name: b.name || "",
+                relation: b.relation || "",
+                email: b.email || "",
+                phone: b.phone || "",
+                notes: b.notes || "",
+              }))
+            : [newBene()],
+          allocations: w.data.allocations || [],
+          preamble_notes: w.data.preamble_notes || "",
+        });
       }
-    })();
+    } catch (e) {
+      toast.error(formatApiErrorDetail(e.response?.data?.detail));
+    } finally {
+      setLoading(false);
+    }
   }, []);
 
+  useEffect(() => { loadInitial(); }, [loadInitial]);
+
   const addBene = () =>
-    setForm({ ...form, beneficiaries: [...form.beneficiaries, { name: "", relation: "", email: "", phone: "", notes: "" }] });
+    setForm({ ...form, beneficiaries: [...form.beneficiaries, newBene()] });
   const delBene = (i) =>
     setForm({
       ...form,
@@ -137,13 +142,15 @@ export default function Will() {
 
   // Signatures & review state
   const [sigs, setSigs] = useState(null);
-  const loadSigs = async () => {
+  const loadSigs = useCallback(async () => {
     try {
       const { data } = await api.get("/will/signatures");
       setSigs(data);
-    } catch (e) { /* non-fatal */ }
-  };
-  useEffect(() => { loadSigs(); }, []);
+    } catch (e) {
+      console.debug("will/signatures load failed", e);
+    }
+  }, []);
+  useEffect(() => { loadSigs(); }, [loadSigs]);
 
   const [lawyerForm, setLawyerForm] = useState({ lawyer_name: "", lawyer_email: "", lawyer_phone: "", note: "" });
   const [lawyerOpen, setLawyerOpen] = useState(false);
@@ -216,6 +223,7 @@ export default function Will() {
         ...form,
         beneficiaries: data.beneficiaries.length
           ? data.beneficiaries.map((b) => ({
+              ...newBene(),
               name: b.name || "",
               relation: b.relation || "",
               email: "",
@@ -293,7 +301,7 @@ export default function Will() {
         </div>
         <div className="space-y-3">
           {form.beneficiaries.map((b, i) => (
-            <div key={i} className="border hairline p-4" data-testid={`will-bene-${i}`}>
+            <div key={b._k || `bene-${i}`} className="border hairline p-4" data-testid={`will-bene-${i}`}>
               <div className="flex items-center justify-between mb-3">
                 <span className="eyebrow">Beneficiary {i + 1}</span>
                 {form.beneficiaries.length > 1 && (
@@ -336,7 +344,7 @@ export default function Will() {
                     {form.beneficiaries.map((b, bi) => {
                       const s = alloc.splits.find((x) => x.beneficiary_index === bi);
                       return (
-                        <div key={bi} className="flex items-center gap-3 text-sm">
+                        <div key={b._k || `split-${p.id}-${bi}`} className="flex items-center gap-3 text-sm">
                           <span className="text-muted-foreground flex-1 truncate">{b.name || `Beneficiary ${bi + 1}`}</span>
                           <input
                             type="number"

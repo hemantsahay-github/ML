@@ -12,7 +12,7 @@ BASE_URL = os.environ.get("REACT_APP_BACKEND_URL", "").rstrip("/")
 def session():
     s = requests.Session()
     s.headers.update({"Content-Type": "application/json"})
-    r = s.post(f"{BASE_URL}/api/auth/login", json={"email": "admin@estima.com", "password": "Admin@123"})
+    r = s.post(f"{BASE_URL}/api/auth/login", json={"email": os.environ.get("ADMIN_EMAIL", "admin@estima.com"), "password": os.environ.get("ADMIN_PASSWORD", "Admin@123")})
     assert r.status_code == 200, f"Login failed: {r.text}"
     return s
 

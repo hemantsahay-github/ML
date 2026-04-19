@@ -409,9 +409,9 @@ function LoanOptimizer() {
                   </tr>
                 </thead>
                 <tbody>
-                  {res.grid.map((g, i) => (
+                  {res.grid.map((g) => (
                     <tr
-                      key={i}
+                      key={`dp-${g.down_payment_pct}`}
                       className={`border-b hairline last:border-0 ${
                         res.best_leverage_xirr && g.down_payment_pct === res.best_leverage_xirr.down_payment_pct
                           ? "bg-[hsl(var(--secondary))]/5"
@@ -546,7 +546,7 @@ function CashflowPositiveCalc() {
                 </thead>
                 <tbody>
                   {res.breakdown.map((r, i) => (
-                    <tr key={i} className="border-b hairline last:border-0" data-testid={`cashflow-row-${i}`}>
+                    <tr key={`p-${r.price}-${i}`} className="border-b hairline last:border-0" data-testid={`cashflow-row-${i}`}>
                       <td className="p-4">{inr(r.price)}</td>
                       <td className="p-4">{inr(r.loan)}</td>
                       <td className="p-4">{inr(r.down_payment)}</td>
@@ -913,7 +913,7 @@ function WealthNarrative() {
               <div className="eyebrow mb-3">Why the math favours buying</div>
               <ul className="space-y-3 text-sm leading-relaxed">
                 {res.narratives.map((n, i) => (
-                  <li key={i} className="flex gap-3" data-testid={`wealth-narrative-${i}`}>
+                  <li key={`wealth-${n.slice(0, 24)}-${i}`} className="flex gap-3" data-testid={`wealth-narrative-${i}`}>
                     <span className="text-[hsl(var(--secondary))]">▪</span>
                     <span className="text-muted-foreground">{n}</span>
                   </li>
@@ -1234,7 +1234,7 @@ function CarVsProperty() {
               <div className="eyebrow mb-3">Why property wins here</div>
               <ul className="space-y-2 text-sm leading-relaxed">
                 {res.narrative.map((n, i) => (
-                  <li key={i} className="flex gap-3" data-testid={`car-narrative-${i}`}>
+                  <li key={`car-${n.slice(0, 24)}-${i}`} className="flex gap-3" data-testid={`car-narrative-${i}`}>
                     <span className="text-[hsl(var(--secondary))]">▪</span>
                     <span className="text-muted-foreground">{n}</span>
                   </li>
@@ -1353,7 +1353,7 @@ function UCProjection() {
               <div className="eyebrow mb-3">What this means</div>
               <ul className="space-y-2 text-sm leading-relaxed">
                 {res.narrative.map((n, i) => (
-                  <li key={i} className="flex gap-3" data-testid={`uc-narrative-${i}`}>
+                  <li key={`uc-${n.slice(0, 24)}-${i}`} className="flex gap-3" data-testid={`uc-narrative-${i}`}>
                     <span className="text-[hsl(var(--secondary))]">▪</span>
                     <span className="text-muted-foreground">{n}</span>
                   </li>
@@ -1488,7 +1488,7 @@ function RtmVsUcBreakeven() {
               <div className="eyebrow mb-3">Bottom line</div>
               <ul className="space-y-2 text-sm leading-relaxed">
                 {res.narrative.map((n, i) => (
-                  <li key={i} className="flex gap-3" data-testid={`rtmuc-narrative-${i}`}>
+                  <li key={`rtmuc-${n.slice(0, 24)}-${i}`} className="flex gap-3" data-testid={`rtmuc-narrative-${i}`}>
                     <span className="text-[hsl(var(--secondary))]">▪</span>
                     <span className="text-muted-foreground">{n}</span>
                   </li>
@@ -1503,16 +1503,20 @@ function RtmVsUcBreakeven() {
 }
 
 /* ---------------------- XIRR ---------------------- */
+function mkFlowKey() {
+  return typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : `f-${Date.now()}-${Math.random()}`;
+}
+
 function XirrCalc() {
   const [rows, setRows] = useState([
-    { date: "2020-06-01", amount: -2000000 },
-    { date: "2022-06-01", amount: 180000 },
-    { date: "2024-06-01", amount: 200000 },
-    { date: new Date().toISOString().slice(0, 10), amount: 3500000 },
+    { _k: mkFlowKey(), date: "2020-06-01", amount: -2000000 },
+    { _k: mkFlowKey(), date: "2022-06-01", amount: 180000 },
+    { _k: mkFlowKey(), date: "2024-06-01", amount: 200000 },
+    { _k: mkFlowKey(), date: new Date().toISOString().slice(0, 10), amount: 3500000 },
   ]);
   const [res, setRes] = useState(null);
   const [loading, setLoading] = useState(false);
-  const add = () => setRows([...rows, { date: new Date().toISOString().slice(0, 10), amount: 0 }]);
+  const add = () => setRows([...rows, { _k: mkFlowKey(), date: new Date().toISOString().slice(0, 10), amount: 0 }]);
   const del = (i) => setRows(rows.filter((_, j) => j !== i));
   const update = (i, k, v) => setRows(rows.map((r, j) => (j === i ? { ...r, [k]: v } : r)));
   const run = async () => {
@@ -1532,7 +1536,7 @@ function XirrCalc() {
         <div className="eyebrow mb-3">Cashflows (outflow = negative)</div>
         <div className="space-y-2">
           {rows.map((r, i) => (
-            <div key={i} className="flex gap-2 items-center" data-testid={`xirr-row-${i}`}>
+            <div key={r._k} className="flex gap-2 items-center" data-testid={`xirr-row-${i}`}>
               <input type="date" className="input-dark px-2 py-1.5 text-sm flex-1" value={r.date} onChange={(e) => update(i, "date", e.target.value)} />
               <input type="number" className="input-dark px-2 py-1.5 text-sm flex-1" value={r.amount} onChange={(e) => update(i, "amount", e.target.value)} />
               <button onClick={() => del(i)} className="btn-ghost p-1.5" title="Remove"><X size={12} /></button>
