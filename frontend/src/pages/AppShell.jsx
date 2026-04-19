@@ -19,6 +19,7 @@ import {
   Gift,
   UserCircle,
   MapTrifold,
+  Scroll,
 } from "@phosphor-icons/react";
 
 function daysLeft(iso) {
@@ -51,6 +52,7 @@ export default function AppShell() {
     { to: "/app/portfolio", label: "Portfolio", icon: ChartPieSlice, id: "nav-portfolio" },
     { to: "/app/tenants", label: "Tenants", icon: UserCircle, id: "nav-tenants" },
     { to: "/app/projects", label: "Projects", icon: MapTrifold, id: "nav-projects" },
+    { to: "/app/will", label: "Will", icon: Scroll, id: "nav-will" },
     { to: "/app/compare", label: "Compare", icon: Scales, id: "nav-compare" },
     { to: "/app/calculators", label: "Calculators", icon: Calculator, id: "nav-calculators" },
     { to: "/app/advisor", label: "AI Advisor", icon: Sparkle, id: "nav-advisor", pro: true },

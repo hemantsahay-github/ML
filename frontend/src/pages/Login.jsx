@@ -2,7 +2,8 @@ import { useState, useEffect } from "react";
 import { Link, useNavigate, useLocation } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 import { toast } from "sonner";
-import { SignIn, GoogleLogo } from "@phosphor-icons/react";
+import { SignIn, GoogleLogo, PlayCircle } from "@phosphor-icons/react";
+import api, { formatApiErrorDetail } from "../lib/api";
 
 function googleLoginUrl() {
   const redirect = encodeURIComponent(`${window.location.origin}/login`);
@@ -40,6 +41,20 @@ export default function Login() {
     toast.success("Welcome back.");
     const target = res.user?.role === "tenant" ? "/tenant" : from;
     nav(target, { replace: true });
+  };
+
+  const [demoLoading, setDemoLoading] = useState(false);
+  const demoLogin = async () => {
+    setDemoLoading(true);
+    try {
+      const { data } = await api.post("/auth/demo-login", {});
+      toast.success(`Demo mode — logged in as ${data.email}`);
+      // Force refresh of auth context
+      window.location.href = "/app";
+    } catch (e) {
+      toast.error(formatApiErrorDetail(e.response?.data?.detail) || "Demo login failed");
+      setDemoLoading(false);
+    }
   };
 
   return (
@@ -122,6 +137,16 @@ export default function Login() {
           >
             <GoogleLogo size={16} weight="bold" /> Continue with Google
           </a>
+
+          <button
+            type="button"
+            onClick={demoLogin}
+            disabled={demoLoading}
+            className="btn-ghost w-full py-3 mt-3 inline-flex items-center justify-center gap-2 text-sm border-dashed border-[hsl(var(--secondary))] text-[hsl(var(--secondary))]"
+            data-testid="login-demo-button"
+          >
+            <PlayCircle size={16} weight="duotone" /> {demoLoading ? "Loading demo…" : "Try the demo — no signup"}
+          </button>
 
           <div className="mt-8 text-sm text-muted-foreground">
             No account?{" "}

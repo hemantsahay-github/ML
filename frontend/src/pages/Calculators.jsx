@@ -26,7 +26,7 @@ const tabs = [
   { id: "cashflow", label: "Cashflow-positive finder" },
   { id: "rentcf", label: "Rent-for-cashflow" },
   { id: "resale", label: "Resale estimator" },
-  { id: "optimizer", label: "Loan optimizer" },
+  { id: "optimizer", label: "Loan Leverage Optimizer" },
   { id: "builder", label: "Builder plan" },
   { id: "uc", label: "UC expected value" },
   { id: "rtmuc", label: "RTM vs UC breakeven" },
@@ -278,6 +278,9 @@ function LoanOptimizer() {
     possession_months: 36,
     disbursement_schedule: "clp",
     subvention_by_builder: false,
+    appreciation_pct: 7,
+    rental_yield_pct: 3,
+    analysis_years: 10,
   });
   const [res, setRes] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -300,6 +303,10 @@ function LoanOptimizer() {
         <div className="grid grid-cols-2 gap-3">
           <NumberField label="Loan %" value={form.loan_rate} step="0.1" onChange={(v) => setForm({ ...form, loan_rate: v })} />
           <NumberField label="Tenure" value={form.loan_tenure_years} onChange={(v) => setForm({ ...form, loan_tenure_years: v })} />
+        </div>
+        <div className="grid grid-cols-2 gap-3">
+          <NumberField label="Appreciation % p.a." value={form.appreciation_pct} step="0.1" onChange={(v) => setForm({ ...form, appreciation_pct: v })} />
+          <NumberField label="Horizon (yrs)" value={form.analysis_years} onChange={(v) => setForm({ ...form, analysis_years: v })} />
         </div>
         <NumberField label="Maint / month (₹)" value={form.maintenance_monthly} onChange={(v) => setForm({ ...form, maintenance_monthly: v })} />
         <NumberField label="Tax / year (₹)" value={form.property_tax_yearly} onChange={(v) => setForm({ ...form, property_tax_yearly: v })} />
@@ -355,6 +362,13 @@ function LoanOptimizer() {
           </div>
         ) : (
           <div className="space-y-6" data-testid="optimizer-result">
+            {res.best_leverage_xirr && (
+              <div className="card-flat p-6 border-[hsl(var(--secondary))]">
+                <div className="eyebrow text-[hsl(var(--secondary))] mb-1">Best 10-yr leverage XIRR</div>
+                <div className="font-serif text-4xl">{res.best_leverage_xirr.leverage_xirr_pct}% at {res.best_leverage_xirr.down_payment_pct}% DP</div>
+                <div className="text-sm text-muted-foreground mt-1">Net equity at year {res.analysis_years}: {inr(res.best_leverage_xirr.net_equity_at_horizon)} · CAGR {res.best_leverage_xirr.leverage_cagr_pct}%</div>
+              </div>
+            )}
             <div className="grid md:grid-cols-3 gap-4">
               <Highlight
                 label="Cashflow-neutral"
@@ -379,7 +393,7 @@ function LoanOptimizer() {
             </div>
             <div className="card-flat overflow-x-auto">
               <div className="p-4 eyebrow border-b hairline flex items-center justify-between">
-                <span>Down-payment sweep</span>
+                <span>Down-payment sweep · {res.analysis_years}-yr leverage</span>
                 {res.under_construction && (
                   <span className="text-xs text-muted-foreground normal-case">
                     UC · {res.possession_months} months · {res.disbursement_schedule}{res.subvention_by_builder ? " · subvention" : ""}
@@ -389,7 +403,7 @@ function LoanOptimizer() {
               <table className="w-full text-sm">
                 <thead className="text-left text-muted-foreground border-b hairline">
                   <tr>
-                    {["DP %", "DP", "Loan", "EMI", "Cashflow / mo", "CoC return"].concat(res.under_construction ? ["Pre-EMI total"] : []).map((h) => (
+                    {["DP %", "DP", "Loan", "EMI", "Cashflow / mo", "CoC return", "Leverage XIRR", "CAGR"].map((h) => (
                       <th key={h} className="p-3 font-normal eyebrow">{h}</th>
                     ))}
                   </tr>
@@ -399,8 +413,8 @@ function LoanOptimizer() {
                     <tr
                       key={i}
                       className={`border-b hairline last:border-0 ${
-                        res.cashflow_neutral && g.down_payment_pct === res.cashflow_neutral.down_payment_pct
-                          ? "bg-[hsl(var(--muted))]"
+                        res.best_leverage_xirr && g.down_payment_pct === res.best_leverage_xirr.down_payment_pct
+                          ? "bg-[hsl(var(--secondary))]/5"
                           : ""
                       }`}
                       data-testid={`optimizer-row-${g.down_payment_pct}`}
@@ -414,7 +428,8 @@ function LoanOptimizer() {
                         {inr(g.monthly_cashflow)}
                       </td>
                       <td className="p-3 text-xs">{g.cash_on_cash_return_pct}%</td>
-                      {res.under_construction && <td className="p-3 text-xs">{inr(g.pre_emi_total)}</td>}
+                      <td className={`p-3 num-metric ${g.leverage_xirr_pct >= 10 ? "text-[hsl(var(--secondary))]" : ""}`}>{g.leverage_xirr_pct}%</td>
+                      <td className="p-3 text-xs">{g.leverage_cagr_pct}%</td>
                     </tr>
                   ))}
                 </tbody>
@@ -1100,15 +1115,20 @@ function PrepaymentAnalysis() {
 /* ---------------------- Car vs Property ---------------------- */
 function CarVsProperty() {
   const [form, setForm] = useState({
-    amount: 1500000,
+    car_price: 1500000,
+    car_dp: 300000,
+    car_loan_rate: 10.5,
+    car_loan_tenure_years: 5,
     car_depreciation_pct: 15,
     car_running_cost_monthly: 12000,
     car_replace_years: 8,
-    dp_pct: 100,
-    loan_rate: 8.5,
-    loan_tenure_years: 20,
+    property_price: 8000000,
+    property_dp: 1600000,
+    property_loan_rate: 8.5,
+    property_loan_tenure_years: 20,
     appreciation_pct: 7,
-    rental_yield_pct: 3,
+    monthly_rent: 22000,
+    rent_increase_pct: 7,
     years: 10,
   });
   const [res, setRes] = useState(null);
@@ -1125,24 +1145,38 @@ function CarVsProperty() {
     }
   };
   return (
-    <div className="grid lg:grid-cols-[380px_1fr] gap-8">
-      <div className="card-flat p-6 space-y-2">
-        <NumberField label="Amount (₹)" value={form.amount} onChange={(v) => setForm({ ...form, amount: v })} />
-        <div className="eyebrow pt-3 pb-1 border-t hairline mt-3">Car assumptions</div>
+    <div className="grid lg:grid-cols-[420px_1fr] gap-8">
+      <div className="card-flat p-6 space-y-1 max-h-[80vh] overflow-y-auto">
+        <div className="eyebrow pb-2 border-b hairline">Car</div>
+        <div className="grid grid-cols-2 gap-3 pt-2">
+          <NumberField label="Car price" value={form.car_price} onChange={(v) => setForm({ ...form, car_price: v })} />
+          <NumberField label="DP on car" value={form.car_dp} onChange={(v) => setForm({ ...form, car_dp: v })} />
+        </div>
         <div className="grid grid-cols-2 gap-3">
-          <NumberField label="Depreciation %" value={form.car_depreciation_pct} step="0.5" onChange={(v) => setForm({ ...form, car_depreciation_pct: v })} />
-          <NumberField label="Replace every (yrs)" value={form.car_replace_years} onChange={(v) => setForm({ ...form, car_replace_years: v })} />
+          <NumberField label="Car loan %" value={form.car_loan_rate} step="0.1" onChange={(v) => setForm({ ...form, car_loan_rate: v })} />
+          <NumberField label="Tenure" value={form.car_loan_tenure_years} onChange={(v) => setForm({ ...form, car_loan_tenure_years: v })} />
+        </div>
+        <div className="grid grid-cols-2 gap-3">
+          <NumberField label="Deprec % p.a." value={form.car_depreciation_pct} step="0.5" onChange={(v) => setForm({ ...form, car_depreciation_pct: v })} />
+          <NumberField label="Replace yrs" value={form.car_replace_years} onChange={(v) => setForm({ ...form, car_replace_years: v })} />
         </div>
         <NumberField label="Running cost ₹/mo" value={form.car_running_cost_monthly} onChange={(v) => setForm({ ...form, car_running_cost_monthly: v })} />
-        <div className="eyebrow pt-3 pb-1 border-t hairline mt-3">Property assumptions</div>
+
+        <div className="eyebrow pt-4 pb-2 border-t hairline mt-4">Property</div>
+        <div className="grid grid-cols-2 gap-3 pt-2">
+          <NumberField label="Property price" value={form.property_price} onChange={(v) => setForm({ ...form, property_price: v })} />
+          <NumberField label="DP on property" value={form.property_dp} onChange={(v) => setForm({ ...form, property_dp: v })} />
+        </div>
         <div className="grid grid-cols-2 gap-3">
-          <NumberField label="DP %" value={form.dp_pct} onChange={(v) => setForm({ ...form, dp_pct: v })} />
+          <NumberField label="Prop loan %" value={form.property_loan_rate} step="0.1" onChange={(v) => setForm({ ...form, property_loan_rate: v })} />
+          <NumberField label="Tenure" value={form.property_loan_tenure_years} onChange={(v) => setForm({ ...form, property_loan_tenure_years: v })} />
+        </div>
+        <div className="grid grid-cols-2 gap-3">
           <NumberField label="Appreciation %" value={form.appreciation_pct} step="0.1" onChange={(v) => setForm({ ...form, appreciation_pct: v })} />
+          <NumberField label="Rent ↑ %" value={form.rent_increase_pct} step="0.1" onChange={(v) => setForm({ ...form, rent_increase_pct: v })} />
         </div>
-        <div className="grid grid-cols-2 gap-3">
-          <NumberField label="Rental yield %" value={form.rental_yield_pct} step="0.1" onChange={(v) => setForm({ ...form, rental_yield_pct: v })} />
-          <NumberField label="Horizon" value={form.years} onChange={(v) => setForm({ ...form, years: v })} />
-        </div>
+        <NumberField label="Monthly rent ₹" value={form.monthly_rent} onChange={(v) => setForm({ ...form, monthly_rent: v })} />
+        <NumberField label="Horizon (years)" value={form.years} onChange={(v) => setForm({ ...form, years: v })} />
         <button onClick={run} disabled={loading} className="btn-primary w-full py-2.5 text-sm mt-3" data-testid="car-run-button">
           {loading ? "Running…" : "Show the gap"}
         </button>
@@ -1150,7 +1184,7 @@ function CarVsProperty() {
       <div>
         {!res ? (
           <div className="card-flat p-8 text-muted-foreground">
-            The same ₹ spent on a car vs real estate, side by side. Cars lose 15% a year + eat ₹12k/mo in fuel/insurance/service. Property appreciates 7% p.a. and yields rent. Watch the gap over 10 years.
+            Model the full finance picture: car DP + loan + running costs + replacement vs property DP + loan + rent. Real XIRR for both legs.
           </div>
         ) : (
           <div className="space-y-6" data-testid="car-result">
@@ -1160,11 +1194,28 @@ function CarVsProperty() {
               <div className="text-sm text-muted-foreground mt-3">Net worth gap: {inrFull(Math.abs(res.delta))}</div>
             </div>
             <div className="grid md:grid-cols-2 gap-4">
-              <Metric label="Car final net worth" value={inr(res.final_car_net_worth)} />
-              <Metric label="Property final net worth" value={inr(res.final_property_net_worth)} />
+              <div className="card-flat p-6">
+                <div className="eyebrow mb-3">Car</div>
+                <div className="space-y-1 text-sm">
+                  <Row label="EMI" v={inr(res.car_emi)} />
+                  <Row label="Loan amount" v={inr(res.car_loan)} />
+                  <Row label="Final net worth" v={inr(res.final_car_net_worth)} />
+                  <Row label="XIRR (annualized)" v={`${res.car_xirr_pct}%`} accent={res.car_xirr_pct < 0 ? "bad" : undefined} />
+                </div>
+              </div>
+              <div className="card-flat p-6 border-[hsl(var(--secondary))]">
+                <div className="eyebrow mb-3">Property</div>
+                <div className="space-y-1 text-sm">
+                  <Row label="EMI" v={inr(res.property_emi)} />
+                  <Row label="Loan amount" v={inr(res.property_loan)} />
+                  <Row label="Final value" v={inr(res.final_property_value)} />
+                  <Row label="Final net worth" v={inr(res.final_property_net_worth)} accent="good" />
+                  <Row label="XIRR (annualized)" v={`${res.property_xirr_pct}%`} accent="good" />
+                </div>
+              </div>
             </div>
             <div className="card-flat p-6">
-              <div className="eyebrow mb-4">Trajectory</div>
+              <div className="eyebrow mb-4">Net-worth trajectory</div>
               <div style={{ width: "100%", height: 320 }}>
                 <ResponsiveContainer>
                   <LineChart data={res.series}>
@@ -1209,6 +1260,8 @@ function UCProjection() {
     construction_cost_inflation_pct: 6,
     post_possession_boost_pct: 5,
     disbursement_schedule: "clp",
+    pre_emi_by_builder: false,
+    builder_pre_emi_cap_months: 0,
   });
   const [res, setRes] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -1245,6 +1298,19 @@ function UCProjection() {
             <option value="linear">Linear ramp</option>
           </select>
         </label>
+        <label className="flex items-center gap-2 text-sm pt-3 border-t hairline mt-3">
+          <input
+            type="checkbox"
+            checked={form.pre_emi_by_builder}
+            onChange={(e) => setForm({ ...form, pre_emi_by_builder: e.target.checked })}
+            className="accent-[hsl(var(--primary))]"
+            data-testid="uc-subvention"
+          />
+          Pre-EMI borne by builder (subvention)
+        </label>
+        {form.pre_emi_by_builder && (
+          <NumberField label="Builder covers till (months, 0 = possession)" value={form.builder_pre_emi_cap_months} onChange={(v) => setForm({ ...form, builder_pre_emi_cap_months: v })} />
+        )}
         <button onClick={run} disabled={loading} className="btn-primary w-full py-2.5 text-sm mt-3" data-testid="uc-run-button">
           {loading ? "Projecting…" : "Project possession value"}
         </button>
@@ -1261,9 +1327,10 @@ function UCProjection() {
               <Metric label="Effective acquisition cost" value={inrFull(res.effective_acquisition_cost)} />
               <Metric label="Paper profit at possession" value={inrFull(res.projected_profit_at_possession)} />
             </div>
-            <div className="grid md:grid-cols-3 gap-4">
-              <Metric label="Pre-EMI total" value={inr(res.pre_emi_total)} />
-              <Metric label="Construction-cost escalation" value={inr(res.construction_cost_escalation)} />
+            <div className="grid md:grid-cols-4 gap-4">
+              <Metric label="Pre-EMI (you pay)" value={inr(res.pre_emi_by_buyer_total)} />
+              <Metric label="Builder covers" value={inr(res.pre_emi_by_builder_total)} />
+              <Metric label="True XIRR" value={`${res.xirr_pct}%`} />
               <Metric label="Annualized ROI on DP" value={`${res.annualized_roi_on_dp_pct}%`} />
             </div>
             <div className="card-flat p-6">
@@ -1313,6 +1380,8 @@ function RtmVsUcBreakeven() {
     area_appreciation_pct: 7,
     maintenance_monthly: 3000,
     property_tax_yearly: 15000,
+    uc_pre_emi_by_builder: false,
+    uc_builder_pre_emi_cap_months: 0,
   });
   const [res, setRes] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -1337,6 +1406,19 @@ function RtmVsUcBreakeven() {
         <NumberField label="UC price (₹)" value={form.uc_price} onChange={(v) => setForm({ ...form, uc_price: v })} />
         <NumberField label="Rent at possession ₹/mo" value={form.expected_rent_at_possession_uc} onChange={(v) => setForm({ ...form, expected_rent_at_possession_uc: v })} />
         <NumberField label="Possession months" value={form.possession_months} onChange={(v) => setForm({ ...form, possession_months: v })} />
+        <label className="flex items-center gap-2 text-sm pt-1">
+          <input
+            type="checkbox"
+            checked={form.uc_pre_emi_by_builder}
+            onChange={(e) => setForm({ ...form, uc_pre_emi_by_builder: e.target.checked })}
+            className="accent-[hsl(var(--primary))]"
+            data-testid="rtmuc-subvention"
+          />
+          UC pre-EMI by builder (subvention)
+        </label>
+        {form.uc_pre_emi_by_builder && (
+          <NumberField label="Builder covers till (mo, 0=possession)" value={form.uc_builder_pre_emi_cap_months} onChange={(v) => setForm({ ...form, uc_builder_pre_emi_cap_months: v })} />
+        )}
         <div className="eyebrow pt-3 pb-1 border-t hairline mt-3">Common</div>
         <div className="grid grid-cols-2 gap-3">
           <NumberField label="Loan %" value={form.loan_rate} step="0.1" onChange={(v) => setForm({ ...form, loan_rate: v })} />
@@ -1376,6 +1458,7 @@ function RtmVsUcBreakeven() {
                     <Row label="Value at 5y" v={inr(res.rtm.value_at_5y_horizon)} />
                     <Row label="Appreciation gain" v={inr(res.rtm.appreciation_gain)} accent="good" />
                     <Row label="5y carrying cost" v={inr(res.rtm["5y_carrying_cost"] || 0)} accent={(res.rtm["5y_carrying_cost"] || 0) > 0 ? "bad" : "good"} />
+                    {res.rtm.xirr_5y_pct !== undefined && <Row label="5-yr XIRR" v={`${res.rtm.xirr_5y_pct}%`} accent="good" />}
                   </div>
                 ) : (
                   <div className="text-sm text-destructive">Not feasible — rent too low vs EMI+costs.</div>
@@ -1393,6 +1476,8 @@ function RtmVsUcBreakeven() {
                     <Row label="Appreciation gain" v={inr(res.uc.appreciation_gain_at_possession)} accent="good" />
                     <Row label="5y carry incl. pre-EMI" v={inr(res.uc["5y_carrying_cost_incl_pre_emi"] || 0)} accent={(res.uc["5y_carrying_cost_incl_pre_emi"] || 0) > 0 ? "bad" : "good"} />
                     <Row label="Possession in" v={`${res.uc.possession_months} months`} />
+                    {res.uc.xirr_5y_pct !== undefined && <Row label="5-yr XIRR" v={`${res.uc.xirr_5y_pct}%`} accent="good" />}
+                    {res.uc.pre_emi_by_builder && <Row label="Subvention" v="Yes — builder pays pre-EMI" accent="good" />}
                   </div>
                 ) : (
                   <div className="text-sm text-destructive">Not feasible — expected rent too low.</div>

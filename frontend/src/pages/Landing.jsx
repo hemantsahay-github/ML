@@ -1,6 +1,6 @@
 import { Link } from "react-router-dom";
 import { motion } from "framer-motion";
-import { ArrowRight, Buildings, ChartLineUp, Scales, Sparkle } from "@phosphor-icons/react";
+import { ArrowRight, Buildings, ChartLineUp, Scales, Sparkle, MapTrifold, Scroll, UserCircle, Calculator, PlayCircle } from "@phosphor-icons/react";
 
 const HERO_IMG =
   "https://images.unsplash.com/photo-1774415108809-87df103ee55f?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA1NTJ8MHwxfHNlYXJjaHwxfHxkYXJrJTIwbW9vZHklMjBtb2Rlcm4lMjBhcGFydG1lbnQlMjBpbnRlcmlvciUyMGV2ZW5pbmd8ZW58MHx8fHwxNzc2NTQyMTkyfDA&ixlib=rb-4.1.0&q=85";
@@ -9,22 +9,47 @@ const features = [
   {
     icon: <Buildings size={22} weight="duotone" />,
     title: "Property ledger",
-    body: "Catalogue every flat, villa, and plot you are evaluating — with price, carpet area, loan terms and your gut-feel scores.",
+    body: "Catalogue every flat, villa, and plot — with price, carpet area, loan terms and your gut-feel scores. Status-tracked across Evaluating, Owned, Sold.",
   },
   {
     icon: <Scales size={22} weight="duotone" />,
     title: "Side-by-side scoring",
-    body: "Weighted decision score across location, commute, resale and price/value. The winner stops being a coin toss.",
+    body: "Weighted decision score across location, commute, resale and price/value. Share a read-only link with family. CSV + PDF export.",
+  },
+  {
+    icon: <Calculator size={22} weight="duotone" />,
+    title: "14 calculators with XIRR",
+    body: "EMI · Rent vs Buy · Car vs Property · UC expected value · RTM vs UC breakeven · Leverage Optimizer · Wealth narrative · Prepay vs Invest — all with proper XIRR math.",
   },
   {
     icon: <ChartLineUp size={22} weight="duotone" />,
-    title: "Rent vs buy vs invest",
-    body: "Run the brutal math against mutual funds and equity. See where your net worth actually compounds fastest.",
+    title: "Portfolio vs markets",
+    body: "Own it? Watch your property compound against Nifty, MF, gold, silver, FD. Realized P&L on every flip.",
+  },
+  {
+    icon: <MapTrifold size={22} weight="duotone" />,
+    title: "Upcoming projects radar",
+    body: "Curated launches across BLR / MUM / NCR / HYD / PUN / CHN. Star-watch the ones you care about; they follow you to your Dashboard.",
+  },
+  {
+    icon: <UserCircle size={22} weight="duotone" />,
+    title: "Tenants + rent portal",
+    body: "Track tenants, generate PDF receipts, and invite them to a Razorpay-powered portal. They pay; Estima auto-generates the receipt.",
+  },
+  {
+    icon: <Scroll size={22} weight="duotone" />,
+    title: "Draft your Will",
+    body: "Distribute each property across named beneficiaries. Downloadable PDF ready for witnesses — real succession planning, not a spreadsheet.",
   },
   {
     icon: <Sparkle size={22} weight="duotone" />,
     title: "AI advisor",
-    body: "A Claude-powered financial voice that reads your numbers and gives a verdict. No fluff, no brochure-speak.",
+    body: "Claude Sonnet 4.5 reads your numbers and returns a 2-line verdict, 5 bullets of reasoning, and one concrete next step.",
+  },
+  {
+    icon: <PlayCircle size={22} weight="duotone" />,
+    title: "One-click demo mode",
+    body: "Kick the tires with no signup. Pre-seeded with sample properties, tenants and receipts.",
   },
 ];
 
@@ -147,7 +172,7 @@ export default function Landing() {
             A single place where real estate meets the rest of your portfolio.
           </h2>
         </div>
-        <div className="grid md:grid-cols-2 gap-px bg-[hsl(var(--border))] border hairline">
+        <div className="grid md:grid-cols-3 gap-px bg-[hsl(var(--border))] border hairline">
           {features.map((f) => (
             <div
               key={f.title}

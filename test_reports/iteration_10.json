@@ -1,0 +1,79 @@
+{
+  "summary": "Iteration-10 testing complete. Backend 11/11 pytest green (demo-login idempotent+4 seeded props, Will GET/POST/PDF + 404, car-vs-property new schema XIRR, uc-projection pre_emi_by_builder, breakeven-rtm-uc XIRR+subvention, loan-optimizer leverage_xirr). Frontend Playwright verified: demo login button on /login works and redirects to /app; /app/will page loads with testator/executor/beneficiaries/per-property splits; Save Draft triggers 'Will draft saved' toast; Download PDF button present; AppShell nav has 'Will' link; Calculators page loads all 14 tabs; Car vs Property new full-finance form renders with car_price/car_dp/property_price/property_dp and result cards show 'XIRR (annualized) 17.57%' for property and car XIRR; UC expected value has 'Pre-EMI borne by builder (subvention)' checkbox; RTM vs UC breakeven has subvention checkbox; Landing shows 9-item feature grid; Guide contains Will/Demo/Tenant keywords.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "/api/auth/demo-login", "issue": "Response is UserOut-shaped and does NOT include 'is_demo' field (DB has it, but UserOut Pydantic model strips it). Review request expected is_demo=true in response. Currently only observable via plan==pro and is_pro==true. If frontend needs to branch on demo state, add is_demo to UserOut."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "Will.jsx", "issue": "React console warning: 'value prop on input should not be null' — some controlled inputs receive null instead of ''. Cosmetic; does not break functionality.", "selector": "[data-testid='will-page'] input", "priority": "LOW"}
+    ],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Calculators (Car/UC/RTM/Wealth/Rent-for-cashflow)", "issues": ["Carried over from it-8/9: Recharts 'width(-1) height(-1)' warning on first chart mount. Cosmetic only."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration10.py",
+    "/app/test_reports/pytest/iteration10_results.xml"
+  ],
+  "action_items": [
+    "Consider adding 'is_demo' field to UserOut Pydantic model so /auth/demo-login explicitly reports is_demo=true (currently stored in DB but omitted from response).",
+    "Fix null-value warning on Will.jsx inputs — coalesce null -> '' for controlled fields.",
+    "(Carry-over, non-blocking) Set explicit min-height on Recharts ResponsiveContainer parents to suppress width(-1) warning."
+  ],
+  "critical_code_review_comments": [
+    "server.py is now 3991 lines — strongly recommend splitting into routers (auth.py, calc.py, will.py, tenant.py, admin.py, projects.py). Guideline is <700 lines.",
+    "/auth/demo-login sets is_demo=true in DB (line 3714) but UserOut (line 147) does not declare the field, so it's stripped from the response. Either add is_demo to UserOut or document that frontend should key off plan=pro.",
+    "/will/pdf uses reportlab SimpleDocTemplate synchronously inside an async endpoint — for large Wills this could block the event loop. Consider running in executor (run_in_threadpool).",
+    "WillAllocation.splits is typed as List[dict] — consider a proper sub-model (WillSplit) with validated beneficiary_index and percentage (0-100) to prevent bad data.",
+    "demo_login endpoint is public (no rate limit) — could be used to mass-create demo sessions. Consider a short-lived IP-based throttle.",
+    "loan_optimizer XIRR loop computes _xirr for 20 DP% grid entries on every request — acceptable but could cache when inputs are identical."
+  ],
+  "updated_files": ["/app/backend/tests/test_iteration10.py (new, 11 tests)"],
+  "success_rate": {"backend": "100% (11/11)", "frontend": "100% on tested flows"},
+  "test_credentials": "admin@estima.com / Admin@123 (admin). demo@estima.com — auto-login via POST /api/auth/demo-login (no password). Fresh random users (TEST_will_*@estima.com) created via /auth/register with Pass@1234 for 404 test.",
+  "seed_data_creation": "Test run created 1 fresh user (TEST_will_<uuid>@estima.com) + seeded/reused the demo user (demo@estima.com) with its 4 demo properties (Prestige Park Grove 3BHK, Sarjapur Villa, Indiranagar Flat, Koramangala). A Will draft was saved for the demo user. No production data touched.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Demo user is shared across all test runs; its Will + 4 seeded properties persist in DB. UserOut does NOT expose is_demo — rely on plan=='pro' + email=='demo@estima.com'. Will save uses upsert (idempotent); /will/pdf returns raw PDF bytes starting with '%PDF'. Car vs Property new schema uses car_price/car_dp/property_price/property_dp/monthly_rent; old alias (amount+dp_pct) still supported via fallback. UC pre_emi_by_builder=true returns pre_emi_by_builder_total>0 and reduced pre_emi_by_buyer_total + xirr_pct. Breakeven-rtm-uc returns rtm.xirr_5y_pct and uc.xirr_5y_pct; winner is picked by XIRR; uc.pre_emi_by_builder=true is echoed. Loan-optimizer each grid row has leverage_xirr_pct+leverage_cagr_pct+net_equity_at_horizon; top-level best_leverage_xirr is the max-XIRR row. On frontend, 'Find sweet spot' is the submit button for Loan Leverage Optimizer (not 'Run/Optimize'). 'Show the gap' is the submit for Car vs Property. Car vs Property result renders 'XIRR (annualized)' rows (not 'Car XIRR' literal). Tour modal appears on first /app visit — bypass via localStorage.estima_tour_seen='true'.",
+  "backend_test_summary": {
+    "total": 11,
+    "passed": 11,
+    "failed": 0,
+    "coverage": [
+      "POST /api/auth/demo-login creates user (plan=pro, is_pro=true, access_token cookie set)",
+      "POST /api/auth/demo-login idempotent (same id on 2nd call)",
+      "/auth/demo-login seeds 4 demo properties (Prestige, Sarjapur, Indiranagar, Koramangala)",
+      "GET /api/will returns {exists: bool}",
+      "POST /api/will saves testator+executor+2 beneficiaries+1 allocation; GET reflects save",
+      "GET /api/will/pdf returns application/pdf with %PDF magic bytes (>500 bytes)",
+      "GET /api/will/pdf returns 404 for fresh user with no Will",
+      "POST /api/calc/car-vs-property new schema returns car_xirr_pct + property_xirr_pct + winner + narrative",
+      "POST /api/calc/uc-projection pre_emi_by_builder=true yields pre_emi_by_builder_total>0 and lower pre_emi_by_buyer_total than baseline; xirr_pct present",
+      "POST /api/calc/breakeven-rtm-uc with uc_pre_emi_by_builder=true returns rtm.xirr_5y_pct + uc.xirr_5y_pct + winner + uc.pre_emi_by_builder=true",
+      "POST /api/calc/loan-optimizer returns grid with leverage_xirr_pct+leverage_cagr_pct+net_equity_at_horizon; best_leverage_xirr set; analysis_years+monthly_rent_used+narrative present"
+    ]
+  },
+  "frontend_test_summary": {
+    "verified_flows": [
+      "/login — data-testid='login-demo-button' visible and triggers demo login → navigates to /app",
+      "/app/will — Will page loads (data-testid='will-page'); testator/executor/beneficiary fields editable",
+      "/app/will — Save Draft click triggers 'Will draft saved' toast; Download PDF button present",
+      "AppShell nav — 'Will' link visible in sidebar with href='/app/will'",
+      "/app/calculators — 14 tabs render (Why buy/Car/EMI/Rent-vs-Buy/Property vs MF/Cashflow/Rent-for-cashflow/Resale/Loan Leverage Optimizer/Builder plan/UC expected value/RTM vs UC breakeven/Prepay vs Invest/XIRR)",
+      "Car vs Property — new full-finance form with car_price/car_dp/property_price/property_dp/monthly_rent/appreciation; 'Show the gap' returns 'Property wins.' + 'XIRR (annualized)' on both CAR and PROPERTY cards (17.57% property in default scenario)",
+      "UC expected value — 'Pre-EMI borne by builder (subvention)' checkbox present and checkable; reveals 'Builder covers till (months)' input",
+      "RTM vs UC breakeven — 1 subvention checkbox present on form",
+      "Loan Leverage Optimizer — form renders with property_price/monthly_rent/appreciation/horizon/under-construction fields; submit is 'Find sweet spot'",
+      "/ (Landing) — features grid shows 9 items (3-col layout)",
+      "/guide — contains will, demo, tenant keywords (9 features listed)"
+    ],
+    "not_fully_exercised": [
+      "Loan Leverage Optimizer result banner/table ('Best 10-yr leverage XIRR' + 'Leverage XIRR' + 'CAGR' columns) — form renders correctly but automated submit click did not match 'Find sweet spot' button during this run. Backend returns the data (verified via pytest). Recommend manual verification or update test.",
+      "RTM vs UC breakeven result '5-yr XIRR' row in result cards — submit not triggered in UI test. Backend confirmed it returns xirr_5y_pct. Recommend manual UI verification."
+    ]
+  }
+}

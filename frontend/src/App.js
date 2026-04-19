@@ -20,6 +20,7 @@ import Referrals from "./pages/Referrals";
 import Tenants from "./pages/Tenants";
 import Projects from "./pages/Projects";
 import TenantDashboard from "./pages/TenantDashboard";
+import Will from "./pages/Will";
 import DisclaimerPage from "./pages/DisclaimerPage";
 import SharedReport from "./pages/SharedReport";
 import AuthCallback from "./pages/AuthCallback";
@@ -59,6 +60,7 @@ function Router() {
         <Route path="portfolio" element={<Portfolio />} />
         <Route path="tenants" element={<Tenants />} />
         <Route path="projects" element={<Projects />} />
+        <Route path="will" element={<Will />} />
         <Route path="compare" element={<Compare />} />
         <Route path="calculators" element={<Calculators />} />
         <Route path="advisor" element={<Advisor />} />

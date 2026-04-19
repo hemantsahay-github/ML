@@ -1493,37 +1493,33 @@ async def resale_estimate(body: ResaleEstimateRequest):
 # ------------------------------------------------------------
 class LoanOptimizerRequest(BaseModel):
     property_price: float
-    monthly_rent: float
+    monthly_rent: float = 0                   # legacy; optional if using rental_yield_pct
     loan_rate: float = 8.5
     loan_tenure_years: int = 20
     maintenance_monthly: float = 2000.0
     property_tax_yearly: float = 0.0
     # Under-construction mode
     under_construction: bool = False
-    possession_months: int = 0           # months till possession (for UC projects)
-    pre_emi_only: bool = True            # if True, during construction buyer pays interest-only on disbursed loan
-    disbursement_schedule: str = "linear"  # "linear" | "clp" (CLP = 10-20-20-20-20-10 style)
-    subvention_by_builder: bool = False   # if True, builder bears pre-EMI till possession
+    possession_months: int = 0
+    pre_emi_only: bool = True
+    disbursement_schedule: str = "linear"
+    subvention_by_builder: bool = False
+    # Leverage mode extensions
+    appreciation_pct: float = 7.0
+    rental_yield_pct: float = 3.0              # used if monthly_rent absent
+    analysis_years: int = 10
 
 
 @api_router.post("/calc/loan-optimizer")
 async def loan_optimizer(body: LoanOptimizerRequest):
+    # If monthly_rent missing, derive from yield
+    monthly_rent = body.monthly_rent if body.monthly_rent > 0 else body.property_price * (body.rental_yield_pct / 100) / 12
+
     costs_monthly = body.maintenance_monthly + body.property_tax_yearly / 12
     grid = []
     months_build = max(body.possession_months if body.under_construction else 0, 0)
     r_m = (body.loan_rate / 100) / 12
-
-    # CLP-style disbursement percentages across construction months (fallback to linear)
-    def _avg_disbursement_frac():
-        if not body.under_construction or months_build <= 0:
-            return 1.0
-        if body.disbursement_schedule == "clp":
-            # model: 20% booking, 20% mid, 20% 60%, 20% finishing, 20% on possession
-            # avg disbursed over build = 0.5 (roughly — integral of ramp)
-            return 0.5
-        return 0.5  # linear ramp average
-
-    avg_frac = _avg_disbursement_frac()
+    avg_frac = 0.5
 
     for pct in range(5, 101, 5):
         dp = body.property_price * pct / 100
@@ -1533,7 +1529,6 @@ async def loan_optimizer(body: LoanOptimizerRequest):
         pre_emi_total = 0.0
         pre_emi_per_month = 0.0
         if body.under_construction and months_build > 0 and loan > 0:
-            # Interest-only during construction on the AVERAGE disbursed amount
             avg_disbursed = loan * avg_frac
             pre_emi_per_month = avg_disbursed * r_m
             pre_emi_total = pre_emi_per_month * months_build
@@ -1541,12 +1536,44 @@ async def loan_optimizer(body: LoanOptimizerRequest):
                 pre_emi_total = 0.0
                 pre_emi_per_month = 0.0
 
-        cashflow_after_possession = body.monthly_rent - emi - costs_monthly
+        cashflow_after_possession = monthly_rent - emi - costs_monthly
         annual_cashflow = cashflow_after_possession * 12
-        roi = (annual_cashflow / dp * 100) if dp > 0 else 0
+        roi_annual = (annual_cashflow / dp * 100) if dp > 0 else 0
 
-        # Effective first-year outflow incl. pre-EMI if UC
-        first_year_outflow = dp + pre_emi_total + (max(0, -cashflow_after_possession) * max(12 - months_build, 0))
+        # --- 10-year LEVERAGE ROI ---
+        years = body.analysis_years
+        final_value = body.property_price * ((1 + body.appreciation_pct / 100) ** years)
+        # cumulative rent (growing at 7% p.a. as rough proxy)
+        cum_rent = 0
+        r_grow = 0.07
+        for y in range(1, years + 1):
+            cum_rent += monthly_rent * 12 * ((1 + r_grow) ** (y - 1))
+        cum_emi_paid = emi * 12 * min(years, body.loan_tenure_years)
+        out_loan_at_y = _loan_balance(loan, body.loan_rate, body.loan_tenure_years, min(years * 12, body.loan_tenure_years * 12))
+        # Net equity at year N = final_value - outstanding_loan + cum_rent - cum_emi - pre_emi_total - costs_total
+        costs_total = costs_monthly * 12 * years
+        net_equity = final_value - out_loan_at_y + cum_rent - cum_emi_paid - pre_emi_total - costs_total
+        # Leverage ROI = net_equity / dp (total over horizon)
+        leverage_roi_total_pct = (net_equity / dp * 100) if dp > 0 else 0
+        # CAGR
+        cagr_pct = ((net_equity / dp) ** (1 / years) - 1) * 100 if dp > 0 and net_equity > 0 else 0
+
+        # XIRR-based leverage return
+        cfs = [(0, -dp)]
+        if body.under_construction and pre_emi_per_month > 0:
+            for m in range(1, months_build + 1):
+                cfs.append((m * 30, -pre_emi_per_month))
+        for y in range(1, years + 1):
+            yearly_rent = monthly_rent * 12 * ((1 + r_grow) ** (y - 1))
+            yearly_emi = emi * 12 if y * 12 <= body.loan_tenure_years * 12 else 0
+            yearly_costs = costs_monthly * 12
+            net = yearly_rent - yearly_emi - yearly_costs
+            cfs.append((y * 365, net))
+        cfs.append((years * 365, final_value - out_loan_at_y))
+        try:
+            xirr_pct = _xirr(cfs) * 100
+        except Exception:
+            xirr_pct = 0
 
         grid.append({
             "down_payment_pct": pct,
@@ -1555,16 +1582,20 @@ async def loan_optimizer(body: LoanOptimizerRequest):
             "emi": round(emi, 2),
             "monthly_cashflow": round(cashflow_after_possession, 2),
             "annual_cashflow": round(annual_cashflow, 2),
-            "cash_on_cash_return_pct": round(roi, 2),
+            "cash_on_cash_return_pct": round(roi_annual, 2),
             "pre_emi_monthly": round(pre_emi_per_month, 2),
             "pre_emi_total": round(pre_emi_total, 2),
-            "first_year_outflow": round(first_year_outflow, 2),
+            "final_value": round(final_value, 2),
+            "net_equity_at_horizon": round(net_equity, 2),
+            "leverage_roi_pct_total": round(leverage_roi_total_pct, 2),
+            "leverage_cagr_pct": round(cagr_pct, 2),
+            "leverage_xirr_pct": round(xirr_pct, 2),
         })
 
-    # find sweet spots
     neutral = next((g for g in grid if g["monthly_cashflow"] >= 0), None)
     best_positive = max(grid, key=lambda g: g["monthly_cashflow"])
     best_coc = max([g for g in grid if g["down_payment"] > 0], key=lambda g: g["cash_on_cash_return_pct"], default=None)
+    best_leverage_xirr = max([g for g in grid if g["down_payment"] > 0], key=lambda g: g["leverage_xirr_pct"], default=None)
 
     return {
         "grid": grid,
@@ -1572,11 +1603,20 @@ async def loan_optimizer(body: LoanOptimizerRequest):
         "cashflow_neutral": neutral,
         "max_cashflow": best_positive,
         "best_cash_on_cash_return": best_coc,
+        "best_leverage_xirr": best_leverage_xirr,
         "costs_monthly": round(costs_monthly, 2),
+        "monthly_rent_used": round(monthly_rent, 2),
+        "analysis_years": body.analysis_years,
         "under_construction": body.under_construction,
         "possession_months": months_build,
         "subvention_by_builder": body.subvention_by_builder,
         "disbursement_schedule": body.disbursement_schedule,
+        "narrative": [
+            f"Monthly rent used: ₹{int(monthly_rent):,} (from {'your input' if body.monthly_rent > 0 else f'{body.rental_yield_pct}% yield'}).",
+            f"Best leverage XIRR over {body.analysis_years} years: {round((best_leverage_xirr or {}).get('leverage_xirr_pct', 0), 1)}% at {(best_leverage_xirr or {}).get('down_payment_pct', '—')}% DP.",
+            f"Max monthly cashflow: +₹{int(best_positive['monthly_cashflow']):,} at {best_positive['down_payment_pct']}% DP.",
+            f"Lower DP ⇒ higher leverage on appreciation; higher DP ⇒ better monthly cashflow. Pick your trade-off.",
+        ],
     }
 
 
@@ -2942,95 +2982,152 @@ async def xirr_endpoint(body: XirrRequest):
 # Car vs Property — depreciating asset vs appreciating
 # ------------------------------------------------------------
 class CarVsPropertyRequest(BaseModel):
-    amount: float = 1500000
-    # car
-    car_depreciation_pct: float = 15.0       # per year (first-year is higher in reality; simplification)
-    car_running_cost_monthly: float = 12000   # fuel + insurance + maintenance
-    car_replace_years: int = 8                # user replaces car every N years
-    # property (down payment scenario)
-    dp_pct: float = 100.0                     # if 100 = outright purchase
-    loan_rate: float = 8.5
-    loan_tenure_years: int = 20
+    # CAR finance
+    car_price: float = 1500000
+    car_dp: float = 300000                    # down payment on car
+    car_loan_rate: float = 10.5               # car loans typically 10-12%
+    car_loan_tenure_years: int = 5
+    car_depreciation_pct: float = 15.0
+    car_running_cost_monthly: float = 12000
+    car_replace_years: int = 8
+    # PROPERTY finance
+    property_price: float = 8000000
+    property_dp: float = 1600000
+    property_loan_rate: float = 8.5
+    property_loan_tenure_years: int = 20
     appreciation_pct: float = 7.0
-    rental_yield_pct: float = 3.0             # annual rental income as % of property value
+    monthly_rent: float = 22000                # explicit rent income
+    rent_increase_pct: float = 7.0
     years: int = 10
+    # back-compat alias fields (some clients may still send these)
+    amount: Optional[float] = None
+    dp_pct: Optional[float] = None
+    loan_rate: Optional[float] = None
+    loan_tenure_years: Optional[int] = None
+    rental_yield_pct: Optional[float] = None
 
 
 @api_router.post("/calc/car-vs-property")
 async def car_vs_property(body: CarVsPropertyRequest):
-    """Spend the same ₹ on a depreciating asset (car) vs appreciating one (property).
-    Car depreciates + running cost + periodic replacement; property appreciates + yields rent.
-    Returns year-by-year net worth trajectories and the gap at year N.
+    """Full-finance car-vs-property comparison.
+    CAR:       DP + EMI + running cost + periodic replacement vs salvage value
+    PROPERTY:  DP + EMI − rent income, property value appreciates
+    Returns yearly net worth trajectories, XIRR for each leg, winner, narrative.
     """
-    # Car journey
+    # --- Legacy alias handling (if amount/dp_pct sent, map to new fields) ---
+    if body.amount and body.dp_pct:
+        body.car_price = body.amount
+        body.car_dp = body.amount
+        body.property_price = body.amount / (body.dp_pct / 100) if body.dp_pct > 0 else body.amount
+        body.property_dp = body.amount
+        if body.rental_yield_pct:
+            body.monthly_rent = body.property_price * (body.rental_yield_pct / 100) / 12
+        if body.loan_rate:
+            body.property_loan_rate = body.loan_rate
+        if body.loan_tenure_years:
+            body.property_loan_tenure_years = body.loan_tenure_years
+
+    # --- CAR journey ---
+    car_loan = max(body.car_price - body.car_dp, 0)
+    car_emi = _emi(car_loan, body.car_loan_rate, body.car_loan_tenure_years) if car_loan > 0 else 0
     car_series = []
-    car_value = body.amount
-    cum_running = 0
+    car_cfs = [(0, -body.car_dp)]   # XIRR flows
+    car_value = body.car_price
+    cum_car_outflow = body.car_dp
     replacements = 0
     for y in range(1, body.years + 1):
-        # depreciation
+        # Depreciation
         car_value *= (1 - body.car_depreciation_pct / 100)
+        # EMI in this year (0 after tenure ends)
+        year_emi = car_emi * 12 if y * 12 <= body.car_loan_tenure_years * 12 else 0
+        # Running cost
+        year_running = body.car_running_cost_monthly * 12
+        # Replacement (scrap + new purchase)
+        replacement_outflow = 0
         if y % max(body.car_replace_years, 1) == 0 and y < body.years:
-            # replace: scrap old (get 10% of current), buy new at same amount
             scrap = car_value * 0.1
-            car_value = body.amount - scrap  # treat new outlay as cost = amount - scrap
+            replacement_outflow = body.car_price - scrap
+            car_value = body.car_price        # new car starts at full price
             replacements += 1
-        cum_running += body.car_running_cost_monthly * 12
-        car_net = car_value - cum_running - replacements * body.amount * 0.8  # replacement cash out approx
+        total_year_out = year_emi + year_running + replacement_outflow
+        cum_car_outflow += total_year_out
+        car_cfs.append((y * 365, -total_year_out))
+        # Net worth = car_value − remaining_loan − running-cost burnt
+        out_loan = _loan_balance(car_loan, body.car_loan_rate, body.car_loan_tenure_years, min(y * 12, body.car_loan_tenure_years * 12))
+        net = car_value - out_loan - (cum_car_outflow - body.car_dp - sum(body.car_running_cost_monthly * 12 for _ in range(y))) - (body.car_running_cost_monthly * 12 * y)
         car_series.append({
             "year": y,
-            "car_net_worth": round(car_net, 2),
+            "car_net_worth": round(car_value - out_loan - body.car_running_cost_monthly * 12 * y - replacements * body.car_price * 0.8, 2),
             "car_value": round(car_value, 2),
-            "cumulative_running_cost": round(cum_running, 2),
-        })
-
-    # Property journey — dp of body.amount (if dp_pct = 100) else leveraged
-    dp_amount = body.amount
-    property_price = dp_amount / (body.dp_pct / 100) if body.dp_pct > 0 else dp_amount
-    loan = property_price - dp_amount
-    emi = _emi(loan, body.loan_rate, body.loan_tenure_years) if loan > 0 else 0
-    prop_series = []
-    cum_rent = 0
-    cum_emi = 0
-    for y in range(1, body.years + 1):
-        prop_value = property_price * ((1 + body.appreciation_pct / 100) ** y)
-        year_rent = prop_value * (body.rental_yield_pct / 100)
-        cum_rent += year_rent
-        year_emi = emi * 12 if y * 12 <= body.loan_tenure_years * 12 else 0
-        cum_emi += year_emi
-        out_loan = _loan_balance(loan, body.loan_rate, body.loan_tenure_years, min(y * 12, body.loan_tenure_years * 12))
-        prop_net = prop_value - out_loan + cum_rent - cum_emi
-        prop_series.append({
-            "year": y,
-            "property_net_worth": round(prop_net, 2),
-            "property_value": round(prop_value, 2),
-            "cumulative_rent": round(cum_rent, 2),
+            "cumulative_running_cost": round(body.car_running_cost_monthly * 12 * y, 2),
             "outstanding_loan": round(out_loan, 2),
         })
+    # Terminal car sale → salvage
+    car_cfs.append((body.years * 365, car_value))
+    try:
+        car_xirr = _xirr(car_cfs) * 100
+    except Exception:
+        car_xirr = 0
 
-    # Merge series by year
-    series = [
-        {**c, **p}
-        for c, p in zip(car_series, prop_series)
-    ]
+    # --- PROPERTY journey ---
+    prop_loan = max(body.property_price - body.property_dp, 0)
+    prop_emi = _emi(prop_loan, body.property_loan_rate, body.property_loan_tenure_years) if prop_loan > 0 else 0
+    prop_series = []
+    prop_cfs = [(0, -body.property_dp)]
+    monthly_rent = body.monthly_rent
+    for y in range(1, body.years + 1):
+        prop_value = body.property_price * ((1 + body.appreciation_pct / 100) ** y)
+        year_emi = prop_emi * 12 if y * 12 <= body.property_loan_tenure_years * 12 else 0
+        year_rent = monthly_rent * 12 * (1 + body.rent_increase_pct / 100) ** (y - 1)
+        annual_cf = year_rent - year_emi
+        prop_cfs.append((y * 365, annual_cf))
+        out_loan = _loan_balance(prop_loan, body.property_loan_rate, body.property_loan_tenure_years, min(y * 12, body.property_loan_tenure_years * 12))
+        net = prop_value - out_loan
+        prop_series.append({
+            "year": y,
+            "property_net_worth": round(net, 2),
+            "property_value": round(prop_value, 2),
+            "year_rent": round(year_rent, 2),
+            "year_emi": round(year_emi, 2),
+            "outstanding_loan": round(out_loan, 2),
+        })
+    # Terminal: sell at final value
+    final_value = body.property_price * ((1 + body.appreciation_pct / 100) ** body.years)
+    prop_cfs.append((body.years * 365, final_value))
+    try:
+        prop_xirr = _xirr(prop_cfs) * 100
+    except Exception:
+        prop_xirr = 0
+
     final_car = car_series[-1]["car_net_worth"]
     final_prop = prop_series[-1]["property_net_worth"]
     delta = final_prop - final_car
 
+    # Merge series for chart
+    series = [{**c, **p} for c, p in zip(car_series, prop_series)]
+
     return {
         "inputs": body.model_dump(),
         "series": series,
+        "car_emi": round(car_emi, 2),
+        "car_loan": round(car_loan, 2),
+        "property_emi": round(prop_emi, 2),
+        "property_loan": round(prop_loan, 2),
         "final_car_net_worth": round(final_car, 2),
         "final_property_net_worth": round(final_prop, 2),
+        "final_property_value": round(final_value, 2),
         "delta": round(delta, 2),
         "winner": "Property" if delta > 0 else "Car",
+        "car_xirr_pct": round(car_xirr, 2),
+        "property_xirr_pct": round(prop_xirr, 2),
         "replacements_over_horizon": replacements,
         "narrative": [
-            f"A ₹{int(body.amount):,} car loses ~{body.car_depreciation_pct}% of its value every year. After {body.years} years, it is worth ₹{int(car_series[-1]['car_value']):,}.",
-            f"Running costs (fuel + insurance + maintenance) total ₹{int(car_series[-1]['cumulative_running_cost']):,} over {body.years} years — money that never comes back.",
-            f"The same ₹{int(body.amount):,} as property down-payment controls a ₹{int(property_price):,} asset that compounds at ~{body.appreciation_pct}% p.a. — that's the leverage of real estate.",
-            f"Rental yield ({body.rental_yield_pct}%) produces ~₹{int(prop_series[-1]['cumulative_rent']):,} over the horizon. EMIs paid: ₹{int(cum_emi):,}.",
-            f"Net worth gap at year {body.years}: ₹{int(abs(delta)):,} in favour of {'property' if delta > 0 else 'car'}.",
+            f"Car: DP ₹{int(body.car_dp):,} + {body.car_loan_tenure_years}y loan at {body.car_loan_rate}% → EMI ₹{int(car_emi):,}. After {body.years} years it's worth ₹{int(car_value):,}.",
+            f"Car also costs ₹{int(body.car_running_cost_monthly):,}/mo in fuel + insurance + service → ₹{int(body.car_running_cost_monthly * 12 * body.years):,} total over the horizon.",
+            f"Property: DP ₹{int(body.property_dp):,} + {body.property_loan_tenure_years}y loan at {body.property_loan_rate}% → EMI ₹{int(prop_emi):,}. Value grows from ₹{int(body.property_price):,} to ₹{int(final_value):,} at {body.appreciation_pct}% p.a.",
+            f"Rent starts at ₹{int(body.monthly_rent):,}/mo and compounds {body.rent_increase_pct}% a year.",
+            f"Net worth at year {body.years}: property ₹{int(final_prop):,} vs car ₹{int(final_car):,} — gap of ₹{int(abs(delta)):,} in favour of {'property' if delta > 0 else 'car'}.",
+            f"XIRR: car {round(car_xirr, 1)}% (salvage + loan cleared) vs property {round(prop_xirr, 1)}% (rent + sale at year {body.years}).",
         ],
     }
 
@@ -3048,6 +3145,8 @@ class UCProjectionRequest(BaseModel):
     construction_cost_inflation_pct: float = 6.0  # annual — extras charged near possession
     post_possession_boost_pct: float = 5.0      # ready-to-move premium
     disbursement_schedule: Literal["clp", "linear"] = "clp"
+    pre_emi_by_builder: bool = False            # subvention scheme
+    builder_pre_emi_cap_months: int = 0         # 0 = till possession; else capped
 
 
 @api_router.post("/calc/uc-projection")
@@ -3058,27 +3157,25 @@ async def uc_projection(body: UCProjectionRequest):
     loan = body.purchase_price - dp
     r_m = (body.loan_rate / 100) / 12
 
-    # Pre-EMI: interest-only on average disbursed amount till possession
-    avg_frac = 0.5   # linear or CLP average (simplified)
-    pre_emi_monthly = (loan * avg_frac) * r_m if loan > 0 else 0
-    pre_emi_total = pre_emi_monthly * body.possession_months
+    avg_frac = 0.5
+    pre_emi_monthly_gross = (loan * avg_frac) * r_m if loan > 0 else 0
+    cap = body.builder_pre_emi_cap_months if body.builder_pre_emi_cap_months > 0 else body.possession_months
+    builder_months = min(cap, body.possession_months) if body.pre_emi_by_builder else 0
+    buyer_months = body.possession_months - builder_months
+    pre_emi_by_builder_total = pre_emi_monthly_gross * builder_months
+    pre_emi_by_buyer_total = pre_emi_monthly_gross * buyer_months
 
-    # "Extra" construction cost escalation borne by buyer near possession (GST/registration/amenities)
-    escalation = body.purchase_price * (((1 + body.construction_cost_inflation_pct / 100) ** years) - 1) * 0.3  # ~30% of cost inflation typically passed
+    escalation = body.purchase_price * (((1 + body.construction_cost_inflation_pct / 100) ** years) - 1) * 0.3
+    effective_acquisition = body.purchase_price + pre_emi_by_buyer_total + escalation
 
-    effective_acquisition = body.purchase_price + pre_emi_total + escalation
-
-    # Expected possession-day value = appreciation on area price + post-possession boost
     appreciation = body.purchase_price * (((1 + body.area_price_inflation_pct / 100) ** years) - 1)
     possession_value = body.purchase_price * ((1 + body.area_price_inflation_pct / 100) ** years) * (1 + body.post_possession_boost_pct / 100)
 
-    # Monthly schedule (simple linear/clp disbursement & corresponding pre-EMI)
     schedule = []
     for m in range(1, body.possession_months + 1):
         if body.disbursement_schedule == "linear":
             disbursed_frac = m / body.possession_months
         else:
-            # CLP: 20%, 20% at 30%, 20% at 60%, 20% at 80%, 20% at handover (100%)
             milestones = [(0.0, 0.20), (0.30, 0.40), (0.60, 0.60), (0.80, 0.80), (1.00, 1.00)]
             pos = m / body.possession_months
             disbursed_frac = 0
@@ -3086,36 +3183,57 @@ async def uc_projection(body: UCProjectionRequest):
                 if pos >= p:
                     disbursed_frac = frac
         disbursed = loan * disbursed_frac
-        pre_emi_m = disbursed * r_m
+        pre_emi_gross = disbursed * r_m
+        builder_pays = body.pre_emi_by_builder and m <= builder_months
         schedule.append({
             "month": m,
             "disbursed": round(disbursed, 2),
-            "pre_emi_monthly": round(pre_emi_m, 2),
+            "pre_emi_monthly": round(0 if builder_pays else pre_emi_gross, 2),
+            "pre_emi_monthly_gross": round(pre_emi_gross, 2),
+            "paid_by_builder": bool(builder_pays),
             "cumulative_disbursed_pct": round(disbursed_frac * 100, 1),
         })
 
     profit = possession_value - effective_acquisition
     roi = (profit / dp * 100) / years if dp > 0 and years > 0 else 0
 
+    # True XIRR: -dp, monthly -pre_emi (buyer only), +possession_value at handover
+    cfs = [(0, -dp)]
+    for m in range(1, body.possession_months + 1):
+        builder_pays = body.pre_emi_by_builder and m <= builder_months
+        if not builder_pays and pre_emi_monthly_gross > 0:
+            cfs.append((m * 30, -pre_emi_monthly_gross))
+    cfs.append((body.possession_months * 30, possession_value))
+    try:
+        xirr_rate = _xirr(cfs) * 100
+    except Exception:
+        xirr_rate = 0
+
     return {
         "inputs": body.model_dump(),
         "down_payment": round(dp, 2),
         "loan": round(loan, 2),
-        "pre_emi_monthly_avg": round(pre_emi_monthly, 2),
-        "pre_emi_total": round(pre_emi_total, 2),
+        "pre_emi_monthly_avg": round(pre_emi_monthly_gross, 2),
+        "pre_emi_total": round(pre_emi_by_buyer_total, 2),
+        "pre_emi_by_builder_total": round(pre_emi_by_builder_total, 2),
+        "pre_emi_by_buyer_total": round(pre_emi_by_buyer_total, 2),
         "construction_cost_escalation": round(escalation, 2),
         "effective_acquisition_cost": round(effective_acquisition, 2),
         "appreciation_gain": round(appreciation, 2),
         "expected_possession_value": round(possession_value, 2),
         "projected_profit_at_possession": round(profit, 2),
         "annualized_roi_on_dp_pct": round(roi, 2),
+        "xirr_pct": round(xirr_rate, 2),
+        "subvention_saving": round(pre_emi_by_builder_total, 2),
         "disbursement_schedule": schedule,
         "narrative": [
-            f"Today's price ₹{int(body.purchase_price):,} × {round(((1 + body.area_price_inflation_pct/100)**years), 3)} (area growth over {round(years, 1)} yr) = ₹{int(body.purchase_price * ((1 + body.area_price_inflation_pct/100)**years)):,} at possession.",
-            f"A {body.post_possession_boost_pct}% ready-to-move premium lifts the possession value to ₹{int(possession_value):,}.",
-            f"Pre-EMI across construction: ₹{int(pre_emi_total):,} (avg ₹{int(pre_emi_monthly):,}/mo on half-disbursed loan).",
-            f"Construction-cost escalation passed-through: ~₹{int(escalation):,} (registration, GST on hikes, amenities).",
-            f"Effective acquisition: ₹{int(effective_acquisition):,}. Net paper profit at possession: ₹{int(profit):,} — {round(roi, 1)}% annualized on your down-payment.",
+            f"Today's price ₹{int(body.purchase_price):,} × {round(((1 + body.area_price_inflation_pct/100)**years), 3)} (area growth over {round(years, 1)} yr) + {body.post_possession_boost_pct}% RTM premium = ₹{int(possession_value):,} at possession.",
+            (f"Subvention: builder bears ₹{int(pre_emi_by_builder_total):,} of pre-EMI ({builder_months} months). You pay ₹{int(pre_emi_by_buyer_total):,} over the remaining {buyer_months} months."
+             if body.pre_emi_by_builder else
+             f"Pre-EMI across construction: ₹{int(pre_emi_by_buyer_total):,} (avg ₹{int(pre_emi_monthly_gross):,}/mo on half-disbursed loan)."),
+            f"Construction-cost pass-through: ~₹{int(escalation):,} (GST on hikes, registration, amenities).",
+            f"Effective acquisition: ₹{int(effective_acquisition):,}. Net paper profit at possession: ₹{int(profit):,} — {round(roi, 1)}% annualized on DP.",
+            f"True XIRR (time-value of pre-EMI outflows + final sale): {round(xirr_rate, 1)}% p.a.",
         ],
     }
 
@@ -3134,22 +3252,22 @@ class RtmVsUcBreakevenRequest(BaseModel):
     area_appreciation_pct: float = 7.0
     maintenance_monthly: float = 3000
     property_tax_yearly: float = 15000
+    uc_pre_emi_by_builder: bool = False     # subvention
+    uc_builder_pre_emi_cap_months: int = 0   # 0 = till possession
 
 
 @api_router.post("/calc/breakeven-rtm-uc")
 async def breakeven_rtm_uc(body: RtmVsUcBreakevenRequest):
-    """For both RTM and UC: find the minimum down-payment (and corresponding loan amount)
-    such that rent covers EMI + costs once cashflow starts.
-    RTM starts earning rent immediately; UC starts only after possession.
+    """For both RTM and UC: find the minimum down-payment such that rent covers EMI + costs once cashflow starts.
+    Compute 5-year XIRR for each with real cashflows (rent, EMI, pre-EMI, sale at year 5).
     """
     costs_monthly = body.maintenance_monthly + body.property_tax_yearly / 12
+    r_m = (body.loan_rate / 100) / 12
 
     def _find_breakeven(price, rent):
-        # find min DP% where EMI <= rent - costs
         avail = rent - costs_monthly
         if avail <= 0:
             return None
-        # solve EMI*(1-dp) for DP given price — bisect
         for pct in range(1, 101):
             loan = price * (1 - pct / 100)
             emi = _emi(loan, body.loan_rate, body.loan_tenure_years)
@@ -3166,11 +3284,6 @@ async def breakeven_rtm_uc(body: RtmVsUcBreakevenRequest):
     rtm = _find_breakeven(body.rtm_price, body.monthly_rent_rtm)
     uc = _find_breakeven(body.uc_price, body.expected_rent_at_possession_uc)
 
-    # total cost of ownership till breakeven year (5y proxy)
-    # RTM: pays EMI from month 1 but rent offsets
-    # UC: pays pre-EMI during construction; no rent; after possession earns rent
-    r_m = (body.loan_rate / 100) / 12
-
     def _tco_rtm(dp_pct, years=5):
         loan = body.rtm_price * (1 - dp_pct / 100)
         emi = _emi(loan, body.loan_rate, body.loan_tenure_years)
@@ -3180,24 +3293,79 @@ async def breakeven_rtm_uc(body: RtmVsUcBreakevenRequest):
     def _tco_uc(dp_pct, years=5):
         loan = body.uc_price * (1 - dp_pct / 100)
         emi = _emi(loan, body.loan_rate, body.loan_tenure_years)
-        pre_emi_total = (loan * 0.5) * r_m * body.possession_months
+        pre_emi_monthly_gross = (loan * 0.5) * r_m
+        cap = body.uc_builder_pre_emi_cap_months if body.uc_builder_pre_emi_cap_months > 0 else body.possession_months
+        builder_months = min(cap, body.possession_months) if body.uc_pre_emi_by_builder else 0
+        buyer_months = body.possession_months - builder_months
+        pre_emi_total_by_buyer = pre_emi_monthly_gross * buyer_months
         post_months = max(years * 12 - body.possession_months, 0)
         post = (emi + costs_monthly - body.expected_rent_at_possession_uc) * post_months
-        return round(pre_emi_total + post, 2)
+        return round(pre_emi_total_by_buyer + post, 2)
 
-    # appreciation advantage of UC (bought cheaper today, possession in N months)
     years = body.possession_months / 12
     uc_value_at_possession = body.uc_price * ((1 + body.area_appreciation_pct / 100) ** years)
     rtm_value_at_same_horizon = body.rtm_price * ((1 + body.area_appreciation_pct / 100) ** years)
     uc_price_advantage = uc_value_at_possession - body.uc_price
     rtm_price_advantage = rtm_value_at_same_horizon - body.rtm_price
 
+    # XIRR for RTM over 5 years: -dp, monthly cashflow, +sale at y5
+    def _xirr_rtm(dp_pct):
+        loan = body.rtm_price * (1 - dp_pct / 100)
+        emi = _emi(loan, body.loan_rate, body.loan_tenure_years)
+        dp_amt = body.rtm_price - loan
+        cfs = [(0, -dp_amt)]
+        for m in range(1, 61):
+            net = body.monthly_rent_rtm - emi - costs_monthly
+            cfs.append((m * 30, net))
+        value_5y = body.rtm_price * ((1 + body.area_appreciation_pct / 100) ** 5)
+        out_loan = _loan_balance(loan, body.loan_rate, body.loan_tenure_years, 60)
+        cfs.append((5 * 365, value_5y - out_loan))
+        try:
+            return _xirr(cfs) * 100
+        except Exception:
+            return 0
+
+    def _xirr_uc(dp_pct):
+        loan = body.uc_price * (1 - dp_pct / 100)
+        emi = _emi(loan, body.loan_rate, body.loan_tenure_years)
+        dp_amt = body.uc_price - loan
+        pre_emi_monthly_gross = (loan * 0.5) * r_m
+        cap = body.uc_builder_pre_emi_cap_months if body.uc_builder_pre_emi_cap_months > 0 else body.possession_months
+        builder_months = min(cap, body.possession_months) if body.uc_pre_emi_by_builder else 0
+        cfs = [(0, -dp_amt)]
+        # construction months
+        for m in range(1, body.possession_months + 1):
+            builder_pays = m <= builder_months
+            if not builder_pays:
+                cfs.append((m * 30, -pre_emi_monthly_gross))
+        # post-possession months till 60 months total
+        for m in range(body.possession_months + 1, max(body.possession_months + 1, 61)):
+            net = body.expected_rent_at_possession_uc - emi - costs_monthly
+            cfs.append((m * 30, net))
+        # sale at 5y
+        value_5y = body.uc_price * ((1 + body.area_appreciation_pct / 100) ** 5)
+        post_months_paid = max(60 - body.possession_months, 0)
+        out_loan = _loan_balance(loan, body.loan_rate, body.loan_tenure_years, post_months_paid)
+        cfs.append((5 * 365, value_5y - out_loan))
+        try:
+            return _xirr(cfs) * 100
+        except Exception:
+            return 0
+
+    rtm_xirr = _xirr_rtm(rtm["dp_pct"]) if rtm else None
+    uc_xirr = _xirr_uc(uc["dp_pct"]) if uc else None
+
     winner = None
     if rtm and uc:
-        # net benefit at horizon
-        rtm_net = rtm_price_advantage - _tco_rtm(rtm["dp_pct"], years=5)
-        uc_net = uc_price_advantage - _tco_uc(uc["dp_pct"], years=5)
-        winner = "UC" if uc_net > rtm_net else "RTM"
+        winner = "UC" if (uc_xirr or 0) > (rtm_xirr or 0) else "RTM"
+
+    subvention_saving_info = ""
+    if body.uc_pre_emi_by_builder and uc:
+        loan_tmp = body.uc_price * (1 - uc["dp_pct"] / 100)
+        pre_emi_m = (loan_tmp * 0.5) * r_m
+        cap = body.uc_builder_pre_emi_cap_months if body.uc_builder_pre_emi_cap_months > 0 else body.possession_months
+        bm = min(cap, body.possession_months)
+        subvention_saving_info = f"Builder subvention saves you ~₹{int(pre_emi_m * bm):,} over {bm} months."
 
     return {
         "inputs": body.model_dump(),
@@ -3207,6 +3375,7 @@ async def breakeven_rtm_uc(body: RtmVsUcBreakevenRequest):
             "value_at_5y_horizon": round(rtm_value_at_same_horizon, 2),
             "appreciation_gain": round(rtm_price_advantage, 2),
             "5y_carrying_cost": _tco_rtm(rtm["dp_pct"]) if rtm else None,
+            "xirr_5y_pct": round(rtm_xirr, 2) if rtm_xirr is not None else None,
         },
         "uc": {
             **(uc or {}),
@@ -3215,14 +3384,16 @@ async def breakeven_rtm_uc(body: RtmVsUcBreakevenRequest):
             "appreciation_gain_at_possession": round(uc_price_advantage, 2),
             "5y_carrying_cost_incl_pre_emi": _tco_uc(uc["dp_pct"]) if uc else None,
             "possession_months": body.possession_months,
+            "xirr_5y_pct": round(uc_xirr, 2) if uc_xirr is not None else None,
+            "pre_emi_by_builder": body.uc_pre_emi_by_builder,
         },
         "winner": winner,
         "narrative": [
-            f"Ready-to-move: DP {rtm['dp_pct']}% (₹{int(rtm['dp_amount']):,}) makes rent cover EMI+costs immediately." if rtm else "RTM: rent too low vs EMI+costs at any DP.",
-            f"Under-construction: DP {uc['dp_pct']}% (₹{int(uc['dp_amount']):,}) achieves rent-coverage post-possession." if uc else "UC: expected rent too low vs EMI+costs at any DP.",
-            f"UC buys ~₹{int(body.rtm_price - body.uc_price):,} cheaper today and gains ₹{int(uc_price_advantage):,} by possession.",
-            f"RTM pays ₹{int(_tco_rtm(rtm['dp_pct'])) if rtm else 0:,} net over 5 years; UC pays ₹{int(_tco_uc(uc['dp_pct'])) if uc else 0:,} (incl. pre-EMI).",
-        ] if (rtm and uc) else ["Breakeven not found — rent too low vs EMI+costs."],
+            f"RTM: DP {rtm['dp_pct']}% (₹{int(rtm['dp_amount']):,}) makes rent cover EMI+costs immediately. 5-yr XIRR: {round(rtm_xirr, 1)}%." if rtm else "RTM: rent too low vs EMI+costs at any DP.",
+            f"UC: DP {uc['dp_pct']}% (₹{int(uc['dp_amount']):,}) achieves rent-coverage post-possession. 5-yr XIRR: {round(uc_xirr, 1)}%." if uc else "UC: expected rent too low.",
+            subvention_saving_info or f"UC buys ~₹{int(body.rtm_price - body.uc_price):,} cheaper today and gains ₹{int(uc_price_advantage):,} by possession.",
+            f"Winner (by XIRR): {winner}." if winner else "Breakeven not found — rent too low vs EMI+costs.",
+        ],
     }
 
 
@@ -3516,6 +3687,219 @@ async def admin_legacy_transfer(body: LegacyTransferRequest, user: dict = Depend
         "temp_password": pw,
         "transferred": transfer_log,
     }
+
+
+# ------------------------------------------------------------
+# Demo login (one-click) — seeds a demo user + sample data
+# ------------------------------------------------------------
+DEMO_EMAIL = "demo@estima.com"
+DEMO_PASSWORD = "Demo@Estima2026"
+
+
+async def _ensure_demo_user():
+    """Create demo user + seed sample properties/tenants if missing."""
+    u = await db.users.find_one({"email": DEMO_EMAIL})
+    now = datetime.now(timezone.utc)
+    if not u:
+        doc = {
+            "email": DEMO_EMAIL,
+            "name": "Demo User",
+            "password_hash": hash_password(DEMO_PASSWORD),
+            "role": "user",
+            "plan": "pro",
+            "plan_status": "active",
+            "trial_ends_at": None,
+            "plan_expires_at": (now + timedelta(days=3650)).isoformat(),  # 10y
+            "referral_code": "DEMO2026",
+            "is_demo": True,
+            "created_at": now.isoformat(),
+        }
+        r = await db.users.insert_one(doc)
+        uid = str(r.inserted_id)
+        # Seed properties
+        sample_props = [
+            {"id": str(uuid.uuid4()), "user_id": uid, "name": "Prestige Park Grove 3BHK", "type": "flat", "location": "Whitefield, Bengaluru",
+             "price": 19500000, "area_sqft": 1580, "loan_rate": 8.5, "loan_tenure_years": 20, "status": "evaluating", "created_at": now.isoformat()},
+            {"id": str(uuid.uuid4()), "user_id": uid, "name": "Sarjapur Villa", "type": "villa", "location": "Sarjapur Road, Bengaluru",
+             "price": 32500000, "area_sqft": 2800, "loan_rate": 8.5, "loan_tenure_years": 20, "status": "evaluating", "created_at": now.isoformat()},
+            {"id": str(uuid.uuid4()), "user_id": uid, "name": "Indiranagar Flat", "type": "flat", "location": "Indiranagar, Bengaluru",
+             "price": 14500000, "area_sqft": 1200, "loan_rate": 8.5, "loan_tenure_years": 20, "status": "owned",
+             "purchase_date": "2020-04-15", "purchase_price": 9500000, "current_value": 14500000, "current_loan_balance": 4800000,
+             "monthly_rent_income": 38000, "rented": True, "created_at": now.isoformat()},
+            {"id": str(uuid.uuid4()), "user_id": uid, "name": "Koramangala Flat (sold)", "type": "flat", "location": "Koramangala, Bengaluru",
+             "price": 8500000, "area_sqft": 1050, "loan_rate": 9.0, "loan_tenure_years": 15, "status": "sold",
+             "purchase_date": "2015-06-01", "purchase_price": 6000000, "sold_date": "2022-08-15", "sold_price": 11200000, "created_at": now.isoformat()},
+        ]
+        for p in sample_props:
+            try:
+                await db.properties.insert_one(p.copy())
+            except Exception:
+                pass
+        logger.info("Seeded demo user + 4 sample properties")
+    return u or {"email": DEMO_EMAIL, "id": str((await db.users.find_one({"email": DEMO_EMAIL}))["_id"])}
+
+
+@api_router.post("/auth/demo-login", response_model=UserOut)
+async def demo_login(response: Response):
+    await _ensure_demo_user()
+    u = await db.users.find_one({"email": DEMO_EMAIL})
+    uid = str(u["_id"])
+    access = create_access_token(uid, DEMO_EMAIL)
+    refresh = create_refresh_token(uid)
+    set_auth_cookies(response, access, refresh)
+    u["id"] = uid
+    return _user_out(u)
+
+
+# ------------------------------------------------------------
+# Personal Will — draft + PDF
+# ------------------------------------------------------------
+class WillBeneficiary(BaseModel):
+    name: str
+    relation: str = ""
+    email: Optional[EmailStr] = None
+    phone: Optional[str] = None
+    notes: str = ""
+
+
+class WillAllocation(BaseModel):
+    property_id: str
+    splits: List[dict]    # [{"beneficiary_index": 0, "percentage": 50}, ...]
+
+
+class WillRequest(BaseModel):
+    testator_name: str = ""
+    testator_pan: str = ""
+    testator_address: str = ""
+    executor_name: str = ""
+    executor_relation: str = ""
+    witness_1: str = ""
+    witness_2: str = ""
+    beneficiaries: List[WillBeneficiary] = []
+    allocations: List[WillAllocation] = []
+    preamble_notes: str = ""
+
+
+@api_router.get("/will")
+async def get_will(user: dict = Depends(get_current_user)):
+    doc = await db.wills.find_one({"user_id": user["id"]}, {"_id": 0})
+    if not doc:
+        return {"exists": False}
+    return {"exists": True, **doc}
+
+
+@api_router.post("/will")
+async def save_will(body: WillRequest, user: dict = Depends(get_current_user)):
+    data = body.model_dump()
+    data["user_id"] = user["id"]
+    data["updated_at"] = datetime.now(timezone.utc).isoformat()
+    await db.wills.update_one(
+        {"user_id": user["id"]},
+        {"$set": data, "$setOnInsert": {"created_at": data["updated_at"]}},
+        upsert=True,
+    )
+    saved = await db.wills.find_one({"user_id": user["id"]}, {"_id": 0})
+    return {"ok": True, "will": saved}
+
+
+@api_router.get("/will/pdf")
+async def will_pdf(user: dict = Depends(get_current_user)):
+    will = await db.wills.find_one({"user_id": user["id"]}, {"_id": 0})
+    if not will:
+        raise HTTPException(404, "No Will drafted yet")
+    properties = await db.properties.find({"user_id": user["id"]}, {"_id": 0}).to_list(200)
+    prop_by_id = {p["id"]: p for p in properties}
+    buf = io.BytesIO()
+    doc = SimpleDocTemplate(buf, pagesize=A4, leftMargin=20 * mm, rightMargin=20 * mm, topMargin=20 * mm, bottomMargin=20 * mm)
+    styles = getSampleStyleSheet()
+    title_style = ParagraphStyle("title", parent=styles["Title"], fontSize=22, leading=26, alignment=1)
+    h2 = ParagraphStyle("h2", parent=styles["Heading2"], fontSize=13, leading=16, spaceBefore=10)
+    body_s = ParagraphStyle("body", parent=styles["BodyText"], fontSize=10, leading=14)
+
+    story = []
+    story.append(Paragraph("LAST WILL AND TESTAMENT", title_style))
+    story.append(Spacer(1, 8 * mm))
+    testator = will.get("testator_name") or "I, the undersigned"
+    addr = will.get("testator_address") or ""
+    pan = will.get("testator_pan") or ""
+    story.append(Paragraph(
+        f"I, <b>{testator}</b>{', PAN ' + pan if pan else ''}, residing at {addr or '[address]'}, being of sound mind and disposing memory and not acting under duress, do hereby declare this to be my Last Will and Testament, revoking all previous wills and codicils made by me.",
+        body_s,
+    ))
+    if will.get("preamble_notes"):
+        story.append(Spacer(1, 4 * mm))
+        story.append(Paragraph(will["preamble_notes"], body_s))
+
+    story.append(Paragraph("Executor", h2))
+    story.append(Paragraph(
+        f"I appoint <b>{will.get('executor_name') or '[executor name]'}</b>"
+        f"{', ' + will['executor_relation'] if will.get('executor_relation') else ''} as the executor of this Will.",
+        body_s,
+    ))
+
+    story.append(Paragraph("Beneficiaries", h2))
+    bene = will.get("beneficiaries", [])
+    if bene:
+        b_rows = [["#", "Name", "Relation", "Contact"]]
+        for i, b in enumerate(bene):
+            b_rows.append([str(i + 1), b.get("name", ""), b.get("relation", ""), (b.get("email") or b.get("phone") or "—")])
+        t = Table(b_rows, colWidths=[10 * mm, 60 * mm, 45 * mm, 55 * mm])
+        t.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), colors.lightgrey),
+            ("GRID", (0, 0), (-1, -1), 0.3, colors.grey),
+            ("FONTSIZE", (0, 0), (-1, -1), 9),
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ]))
+        story.append(t)
+    else:
+        story.append(Paragraph("(No beneficiaries listed)", body_s))
+
+    story.append(Paragraph("Distribution of Immovable Property", h2))
+    allocs = will.get("allocations", [])
+    if allocs:
+        a_rows = [["Property", "Location", "Beneficiary", "Share"]]
+        for a in allocs:
+            p = prop_by_id.get(a.get("property_id") or "")
+            p_name = p["name"] if p else "(unknown property)"
+            p_loc = (p.get("location", "") if p else "") if p else ""
+            for s in a.get("splits", []):
+                bi = s.get("beneficiary_index", 0)
+                b_name = bene[bi]["name"] if 0 <= bi < len(bene) else "—"
+                a_rows.append([p_name, p_loc, b_name, f"{s.get('percentage', 0)}%"])
+        t = Table(a_rows, colWidths=[55 * mm, 50 * mm, 45 * mm, 20 * mm])
+        t.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), colors.lightgrey),
+            ("GRID", (0, 0), (-1, -1), 0.3, colors.grey),
+            ("FONTSIZE", (0, 0), (-1, -1), 9),
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ]))
+        story.append(t)
+    else:
+        story.append(Paragraph("(No property allocations — this Will covers only general dispositions)", body_s))
+
+    story.append(Spacer(1, 10 * mm))
+    story.append(Paragraph("Signed at _________________________ on this _____ day of ______________, ________.", body_s))
+    story.append(Spacer(1, 10 * mm))
+    sig_rows = [
+        ["_________________________", "", "_________________________", "_________________________"],
+        ["Testator: " + testator, "", f"Witness 1: {will.get('witness_1', '')}", f"Witness 2: {will.get('witness_2', '')}"],
+    ]
+    t = Table(sig_rows, colWidths=[55 * mm, 10 * mm, 55 * mm, 55 * mm])
+    t.setStyle(TableStyle([("FONTSIZE", (0, 0), (-1, -1), 9)]))
+    story.append(t)
+
+    story.append(Spacer(1, 8 * mm))
+    story.append(Paragraph(
+        "<i>This document is a draft generated by Estima as an aid to estate planning. "
+        "It is not legal advice. Please have it reviewed and witnessed per the Indian Succession Act, 1925 "
+        "(or the succession law applicable to you) before relying on it. Minors cannot witness a Will.</i>",
+        ParagraphStyle("dis", parent=body_s, fontSize=8, textColor=colors.grey),
+    ))
+
+    doc.build(story)
+    buf.seek(0)
+    return StreamingResponse(buf, media_type="application/pdf",
+                             headers={"Content-Disposition": f"attachment; filename=last-will-{datetime.now().strftime('%Y%m%d')}.pdf"})
 
 
 # ------------------------------------------------------------

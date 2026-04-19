@@ -14,6 +14,9 @@ import {
   CaretDown,
   PlayCircle,
   Question,
+  MapTrifold,
+  Scroll,
+  UserCircle,
 } from "@phosphor-icons/react";
 
 const FEATURES = [
@@ -43,15 +46,21 @@ const FEATURES = [
   },
   {
     icon: Calculator,
-    title: "Calculators",
+    title: "14 Calculators",
     link: "/app/calculators",
     body:
-      "Four tabs covering the numbers most real-estate agents never show you:",
+      "Every number real-estate agents never show you — now with proper XIRR, leverage-adjusted ROI, and long-horizon wealth modelling.",
     tips: [
-      "EMI — monthly EMI, total interest, yearly amortisation chart.",
-      "Rent vs Buy — net-worth projection comparing equity build-up against invested savings; breakeven year flagged.",
-      "Property vs MF vs Equity — runs the same cash outflow against three asset classes and declares a winner.",
-      "Cashflow-positive finder — reverse-solves the max property price at which rent covers EMI + taxes + maintenance.",
+      "Why buy (wealth) — 25-year buy vs rent-invest narrative with tier-1 premium + generational-transfer bonus.",
+      "Car vs Property — full finance comparison (car DP + loan + running cost vs property DP + loan + rent).",
+      "EMI · Rent vs Buy · Property vs MF vs Equity · Cashflow-positive finder.",
+      "Rent-for-cashflow — the rent you need today to make your owned property CF-positive in N years.",
+      "Resale estimator — min/current rent, renovation, broker fee, LTCG. Returns true XIRR.",
+      "Loan Leverage Optimizer — DP sweep with 10-yr XIRR including appreciation + rent + EMI.",
+      "Builder plan — CLP vs 10:90 vs subvention. UC expected value at possession (w/ pre-EMI by builder).",
+      "RTM vs UC breakeven — min DP for each + 5-yr XIRR + subvention support.",
+      "Prepay vs Invest — part / full / invest-surplus / hybrid scenarios with winner detection.",
+      "XIRR — proper Newton-Raphson IRR for irregular real-estate cashflows.",
     ],
   },
   {
@@ -59,11 +68,44 @@ const FEATURES = [
     title: "Portfolio",
     link: "/app/portfolio",
     body:
-      "For properties you already own or have sold. Five summary tiles (Net worth, Current value, Total equity, Realized gains, Monthly cashflow), a timeline chart since your earliest purchase, a vs-markets comparison against equity/MF/gold/silver/FD, and a Sold ledger with realized P&L.",
+      "For properties you already own or have sold. Net worth, current value, total equity, realized gains, monthly cashflow; timeline chart; vs-markets comparison against equity/MF/gold/silver/FD; Sold ledger with realized P&L.",
     tips: [
       "Mark a property as Sold with sold_date + sold_price to see realized gains show up as a step line on the timeline.",
       "The opportunity-cost chart uses historical CAGR defaults (Equity 13%, MF 11%, Gold 9%, Silver 8.5%, FD 7%) — you'll be surprised how often your property wins.",
       "Net worth = current equity + cumulative realized gains from sold properties.",
+    ],
+  },
+  {
+    icon: MapTrifold,
+    title: "Upcoming Projects directory",
+    link: "/app/projects",
+    body:
+      "Curated under-construction & upcoming launches across tier-1 cities (BLR / MUM / NCR / HYD / PUN / CHN / KOL / AMD) with builder, possession, ticket size, RERA, and amenities. Filter by city, area, status. Star-watch projects and they show on your Dashboard.",
+    tips: [
+      "Submit your own community projects — they appear alongside curated ones.",
+      "Watched projects show up as a section on your Dashboard with quick-access cards.",
+    ],
+  },
+  {
+    icon: UserCircle,
+    title: "Tenants + Rent portal",
+    link: "/app/tenants",
+    body:
+      "Track tenants across your owned rentals — name, rent, email, phone. Generate PDF rent receipts instantly. Invite your tenant to their own portal: they log in at /login and auto-route to /tenant, where they can pay rent via Razorpay and download receipts.",
+    tips: [
+      "Click \"Invite to tenant portal\" on any tenant card (needs the tenant's email). Estima creates a login with a temp password and shows it to you.",
+      "Online rent payment auto-generates a receipt with payment_mode='Razorpay' and a unique receipt number.",
+    ],
+  },
+  {
+    icon: Scroll,
+    title: "Will — succession planning",
+    link: "/app/will",
+    body:
+      "Draft a Last Will and Testament with property-level allocation across named beneficiaries. Download a printable PDF you can have witnessed.",
+    tips: [
+      "Allocations are split per property — give 100% of Flat A to spouse, 60/40 of Flat B to two children, etc.",
+      "Draft auto-saves. Review with a lawyer before signing — witnesses must be non-beneficiaries.",
     ],
   },
   {
@@ -83,9 +125,9 @@ const FEATURES = [
     title: "Pricing & Pro",
     link: "/pricing",
     body:
-      "Free ₹0 · Pro ₹999/month or ₹9,999/year. Every new account starts with a 10-day Pro trial automatically.",
+      "Free ₹0 · Pro ₹999/month or ₹9,999/year. Every new account starts with a 10-day Pro trial automatically. Or click \"Try the demo\" on the login page — no signup.",
     tips: [
-      "Pro unlocks unlimited properties, AI advisor, CSV/PDF exports, share links, cashflow finder, vs-markets chart, and portfolio timeline.",
+      "Pro unlocks unlimited properties, AI advisor, CSV/PDF exports, share links, cashflow finder, vs-markets chart, portfolio timeline, and Will PDF.",
       "Test payment card: 4111 1111 1111 1111 · any future expiry · any CVV.",
       "Cancel anytime — your Pro features keep working until the end of the paid period.",
     ],
