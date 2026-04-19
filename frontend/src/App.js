@@ -23,6 +23,8 @@ import TenantDashboard from "./pages/TenantDashboard";
 import Will from "./pages/Will";
 import LawyerReview from "./pages/LawyerReview";
 import WitnessSign from "./pages/WitnessSign";
+import LawyerDashboard from "./pages/LawyerDashboard";
+import LawyerRegister from "./pages/LawyerRegister";
 import DisclaimerPage from "./pages/DisclaimerPage";
 import SharedReport from "./pages/SharedReport";
 import AuthCallback from "./pages/AuthCallback";
@@ -43,6 +45,15 @@ function Router() {
       <Route path="/share/:id" element={<SharedReport />} />
       <Route path="/lawyer-review/:token" element={<LawyerReview />} />
       <Route path="/witness-sign/:token" element={<WitnessSign />} />
+      <Route path="/lawyer/register" element={<LawyerRegister />} />
+      <Route
+        path="/lawyer"
+        element={
+          <ProtectedRoute>
+            <LawyerDashboard />
+          </ProtectedRoute>
+        }
+      />
       <Route
         path="/tenant"
         element={

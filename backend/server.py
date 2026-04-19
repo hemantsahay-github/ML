@@ -4778,7 +4778,9 @@ async def health():
 # ------------------------------------------------------------
 # Mount and Middleware
 # ------------------------------------------------------------
-app.include_router(api_router)
+# NOTE: app.include_router(api_router) is invoked at the very bottom,
+# AFTER all @api_router decorators (including the lawyer marketplace block)
+# have been registered. Moving it here would silently skip newer routes.
 
 cors_origins_env = os.environ.get("CORS_ORIGINS", "*")
 if cors_origins_env == "*":
@@ -4843,6 +4845,375 @@ async def on_startup():
             updates["plan_expires_at"] = forever
         if updates:
             await db.users.update_one({"email": admin_email}, {"$set": updates})
+
+
+# ============================================================
+# LAWYER MARKETPLACE — signup, listing, booking, queue
+# ============================================================
+
+PLATFORM_FEE_PCT = float(os.environ.get("LAWYER_PLATFORM_FEE_PCT", "10"))
+
+
+class LawyerRegisterIn(BaseModel):
+    email: EmailStr
+    password: str = Field(min_length=6)
+    name: str = Field(min_length=1)
+    bar_council_id: str = Field(min_length=3)
+    specialization: str = "Succession & Wills"
+    rate_inr: int = Field(ge=0, default=2500)
+    bio: str = ""
+
+
+class LawyerPublicOut(BaseModel):
+    id: str
+    name: str
+    specialization: str
+    rate_inr: int
+    bio: str
+    endorsement_count: int
+    verified: bool
+
+
+@api_router.post("/lawyers/register", response_model=UserOut)
+async def lawyer_register(body: LawyerRegisterIn, response: Response):
+    email = body.email.lower().strip()
+    if await db.users.find_one({"email": email}):
+        raise HTTPException(409, "Email already registered")
+    now = datetime.now(timezone.utc).isoformat()
+    doc = {
+        "email": email,
+        "password_hash": hash_password(body.password),
+        "name": body.name,
+        "role": "lawyer",
+        "plan": "free",
+        "plan_status": "none",
+        "created_at": now,
+        "is_demo": False,
+        "lawyer_profile": {
+            "bar_council_id": body.bar_council_id,
+            "specialization": body.specialization,
+            "rate_inr": int(body.rate_inr),
+            "bio": body.bio,
+            "endorsement_count": 0,
+            "verified": False,  # admin must flip this to True
+            "earnings_inr": 0,
+        },
+    }
+    result = await db.users.insert_one(doc)
+    uid = str(result.inserted_id)
+    access = create_access_token(uid, email)
+    refresh_token = create_refresh_token(uid)
+    set_auth_cookies(response, access, refresh_token)
+    doc["id"] = uid
+    doc.pop("_id", None)
+    return _user_out(doc)
+
+
+@api_router.get("/lawyers")
+async def list_lawyers():
+    """Public list of verified lawyers for users to browse."""
+    cur = db.users.find({"role": "lawyer", "lawyer_profile.verified": True})
+    out = []
+    async for u in cur:
+        p = u.get("lawyer_profile", {})
+        out.append({
+            "id": str(u["_id"]),
+            "name": u.get("name", ""),
+            "specialization": p.get("specialization", ""),
+            "rate_inr": int(p.get("rate_inr", 0)),
+            "bio": p.get("bio", ""),
+            "endorsement_count": int(p.get("endorsement_count", 0)),
+            "verified": True,
+        })
+    out.sort(key=lambda x: (-x["endorsement_count"], x["rate_inr"]))
+    return {"lawyers": out, "platform_fee_pct": PLATFORM_FEE_PCT}
+
+
+class LawyerProfileUpdate(BaseModel):
+    rate_inr: Optional[int] = Field(default=None, ge=0)
+    specialization: Optional[str] = None
+    bio: Optional[str] = None
+
+
+@api_router.get("/lawyers/me")
+async def lawyer_me(user: dict = Depends(get_current_user)):
+    if user.get("role") != "lawyer":
+        raise HTTPException(403, "Lawyer-only endpoint")
+    p = user.get("lawyer_profile", {}) or {}
+    return {
+        "user": _user_out(user),
+        "profile": {
+            "bar_council_id": p.get("bar_council_id", ""),
+            "specialization": p.get("specialization", ""),
+            "rate_inr": int(p.get("rate_inr", 0)),
+            "bio": p.get("bio", ""),
+            "endorsement_count": int(p.get("endorsement_count", 0)),
+            "verified": bool(p.get("verified", False)),
+            "earnings_inr": int(p.get("earnings_inr", 0)),
+        },
+    }
+
+
+@api_router.post("/lawyers/me")
+async def lawyer_me_update(body: LawyerProfileUpdate, user: dict = Depends(get_current_user)):
+    if user.get("role") != "lawyer":
+        raise HTTPException(403, "Lawyer-only endpoint")
+    updates = {}
+    if body.rate_inr is not None:
+        updates["lawyer_profile.rate_inr"] = int(body.rate_inr)
+    if body.specialization is not None:
+        updates["lawyer_profile.specialization"] = body.specialization.strip()
+    if body.bio is not None:
+        updates["lawyer_profile.bio"] = body.bio.strip()
+    if updates:
+        await db.users.update_one({"_id": ObjectId(user["id"])}, {"$set": updates})
+    return {"ok": True}
+
+
+@api_router.get("/lawyers/me/reviews")
+async def lawyer_me_reviews(user: dict = Depends(get_current_user)):
+    if user.get("role") != "lawyer":
+        raise HTTPException(403, "Lawyer-only endpoint")
+    cur = db.will_reviews.find({"assigned_lawyer_id": user["id"]}, {"_id": 0}).sort("created_at", -1)
+    rows = []
+    async for r in cur:
+        testator = None
+        wuid = r.get("will_user_id")
+        if wuid:
+            try:
+                testator = await db.users.find_one({"_id": ObjectId(wuid)}, {"_id": 0, "name": 1, "email": 1})
+            except Exception:
+                testator = None
+        rows.append({
+            "token": r["token"],
+            "status": r.get("status", "pending"),
+            "created_at": r.get("created_at"),
+            "expires_at": r.get("expires_at"),
+            "fee_inr": int(r.get("fee_inr", 0)),
+            "paid": bool(r.get("paid", False)),
+            "testator_name": (testator or {}).get("name") or "",
+            "testator_email": (testator or {}).get("email") or "",
+            "note": r.get("note", ""),
+            "review_comments": r.get("review_comments", ""),
+        })
+    return {"reviews": rows}
+
+
+class BookLawyerIn(BaseModel):
+    lawyer_id: str
+    note: str = ""
+
+
+@api_router.post("/will/book-lawyer")
+async def book_lawyer(body: BookLawyerIn, user: dict = Depends(get_current_user)):
+    """Create a lawyer-review request + a Razorpay order for the fee."""
+    will = await db.wills.find_one({"user_id": user["id"]})
+    if not will:
+        raise HTTPException(404, "Draft the Will first")
+    lawyer = None
+    try:
+        lawyer = await db.users.find_one({"_id": ObjectId(body.lawyer_id), "role": "lawyer"})
+    except Exception:
+        lawyer = None
+    if not lawyer or not lawyer.get("lawyer_profile", {}).get("verified", False):
+        raise HTTPException(404, "Lawyer not available")
+    fee_inr = int(lawyer["lawyer_profile"].get("rate_inr", 0))
+    if fee_inr <= 0:
+        raise HTTPException(400, "Lawyer has not set a rate yet")
+
+    token = secrets.token_urlsafe(24)
+    now = datetime.now(timezone.utc)
+    review_doc = {
+        "token": token,
+        "will_user_id": user["id"],
+        "lawyer_name": lawyer.get("name", ""),
+        "lawyer_email": lawyer["email"],
+        "assigned_lawyer_id": body.lawyer_id,
+        "note": body.note or "",
+        "status": "pending",
+        "review_comments": "",
+        "reviewed_pdf_url": None,
+        "created_at": now.isoformat(),
+        "expires_at": (now + timedelta(days=30)).isoformat(),
+        "fee_inr": fee_inr,
+        "platform_fee_inr": int(round(fee_inr * PLATFORM_FEE_PCT / 100)),
+        "paid": False,
+    }
+    await db.will_reviews.insert_one(review_doc.copy())
+    review_doc.pop("_id", None)
+
+    # Razorpay order
+    if razor_client is None:
+        raise HTTPException(503, "Payment gateway not configured")
+    amount_paise = fee_inr * 100
+    try:
+        order = razor_client.order.create({
+            "amount": amount_paise,
+            "currency": "INR",
+            "notes": {"kind": "lawyer_review", "review_token": token, "lawyer_id": body.lawyer_id, "user_id": user["id"]},
+        })
+    except Exception:
+        logger.exception("razorpay lawyer order failed")
+        raise HTTPException(502, "Could not create payment order")
+
+    await db.will_reviews.update_one({"token": token}, {"$set": {"razorpay_order_id": order["id"]}})
+    await db.wills.update_one({"user_id": user["id"]}, {"$set": {
+        "lawyer_review_token": token,
+        "lawyer_email": lawyer["email"],
+        "lawyer_name": lawyer.get("name", ""),
+        "assigned_lawyer_id": body.lawyer_id,
+        "lawyer_review_status": "pending",
+    }})
+
+    return {
+        "ok": True,
+        "token": token,
+        "fee_inr": fee_inr,
+        "order_id": order["id"],
+        "amount": amount_paise,
+        "currency": "INR",
+        "razorpay_key_id": RAZORPAY_KEY_ID,
+        "lawyer": {
+            "id": body.lawyer_id,
+            "name": lawyer.get("name", ""),
+            "specialization": lawyer["lawyer_profile"].get("specialization", ""),
+        },
+    }
+
+
+class BookLawyerVerify(BaseModel):
+    token: str
+    razorpay_order_id: str
+    razorpay_payment_id: str
+    razorpay_signature: str
+
+
+@api_router.post("/will/book-lawyer/verify")
+async def book_lawyer_verify(body: BookLawyerVerify, user: dict = Depends(get_current_user)):
+    review = await db.will_reviews.find_one({"token": body.token, "will_user_id": user["id"]})
+    if not review:
+        raise HTTPException(404, "Booking not found")
+    # verify HMAC
+    expected = hmac.new(
+        RAZORPAY_KEY_SECRET.encode("utf-8"),
+        f"{body.razorpay_order_id}|{body.razorpay_payment_id}".encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+    if not hmac.compare_digest(expected, body.razorpay_signature):
+        raise HTTPException(400, "Signature mismatch")
+
+    fee = int(review.get("fee_inr", 0))
+    plat = int(review.get("platform_fee_inr", 0))
+    lawyer_share = max(fee - plat, 0)
+    await db.will_reviews.update_one({"token": body.token}, {"$set": {
+        "paid": True,
+        "payment_id": body.razorpay_payment_id,
+        "paid_at": datetime.now(timezone.utc).isoformat(),
+    }})
+    # credit lawyer earnings
+    try:
+        await db.users.update_one(
+            {"_id": ObjectId(review["assigned_lawyer_id"])},
+            {"$inc": {"lawyer_profile.earnings_inr": lawyer_share}},
+        )
+    except Exception:
+        logger.exception("lawyer earnings credit failed")
+    # notify the lawyer they have a new paid review
+    lawyer = None
+    try:
+        lawyer = await db.users.find_one({"_id": ObjectId(review["assigned_lawyer_id"])}, {"_id": 0, "email": 1, "name": 1})
+    except Exception:
+        lawyer = None
+    if lawyer:
+        public_base = os.environ.get("PUBLIC_APP_URL", "").rstrip("/") or "https://estima.co.in"
+        review_url = f"{public_base}/lawyer-review/{body.token}"
+        try:
+            notify.send_email(
+                lawyer["email"],
+                f"New paid Will review assignment (₹{fee})",
+                (
+                    f"<p>Dear {lawyer.get('name','Counsel')},</p>"
+                    f"<p>You have a new Will review to complete. Fee: ₹{fee} (your share: ₹{lawyer_share} after {PLATFORM_FEE_PCT}% platform fee).</p>"
+                    f"<p>Review at: <a href='{review_url}'>{review_url}</a></p>"
+                    f"<p>Please complete your review within 30 days.</p><p>— Estima</p>"
+                ),
+            )
+        except Exception:
+            logger.exception("lawyer paid-notify email failed")
+    return {"ok": True}
+
+
+@api_router.post("/public/will-review/{token}/endorse")
+async def endorse_review(token: str):
+    """Lawyer endorses a review they already reviewed — bumps their endorsement_count."""
+    review = await db.will_reviews.find_one({"token": token})
+    if not review:
+        raise HTTPException(404, "Invalid token")
+    if review.get("status") != "reviewed":
+        raise HTTPException(400, "Submit review first before endorsing")
+    if review.get("endorsed"):
+        return {"ok": True, "already": True}
+    await db.will_reviews.update_one({"token": token}, {"$set": {"endorsed": True}})
+    if review.get("assigned_lawyer_id"):
+        try:
+            await db.users.update_one(
+                {"_id": ObjectId(review["assigned_lawyer_id"])},
+                {"$inc": {"lawyer_profile.endorsement_count": 1}},
+            )
+        except Exception:
+            logger.exception("endorsement count update failed")
+    await db.wills.update_one({"user_id": review["will_user_id"]}, {"$set": {"lawyer_endorsed": True}})
+    return {"ok": True}
+
+
+# Admin: verify a lawyer (flip lawyer_profile.verified = True)
+class AdminVerifyLawyerIn(BaseModel):
+    lawyer_id: str
+    verified: bool = True
+
+
+@api_router.post("/admin/lawyers/verify")
+async def admin_verify_lawyer(body: AdminVerifyLawyerIn, user: dict = Depends(get_current_user)):
+    if user.get("role") != "admin":
+        raise HTTPException(403, "Admin only")
+    try:
+        target = await db.users.find_one({"_id": ObjectId(body.lawyer_id), "role": "lawyer"}, {"_id": 0})
+    except Exception:
+        target = None
+    if not target:
+        raise HTTPException(404, "Lawyer not found")
+    await db.users.update_one(
+        {"_id": ObjectId(body.lawyer_id)},
+        {"$set": {"lawyer_profile.verified": bool(body.verified)}},
+    )
+    return {"ok": True, "lawyer_id": body.lawyer_id, "verified": bool(body.verified)}
+
+
+@api_router.get("/admin/lawyers")
+async def admin_list_lawyers(user: dict = Depends(get_current_user)):
+    if user.get("role") != "admin":
+        raise HTTPException(403, "Admin only")
+    cur = db.users.find({"role": "lawyer"}, {"password_hash": 0})
+    rows = []
+    async for u in cur:
+        p = u.get("lawyer_profile", {}) or {}
+        rows.append({
+            "id": str(u["_id"]),
+            "email": u["email"],
+            "name": u.get("name", ""),
+            "bar_council_id": p.get("bar_council_id", ""),
+            "specialization": p.get("specialization", ""),
+            "rate_inr": int(p.get("rate_inr", 0)),
+            "endorsement_count": int(p.get("endorsement_count", 0)),
+            "earnings_inr": int(p.get("earnings_inr", 0)),
+            "verified": bool(p.get("verified", False)),
+            "created_at": u.get("created_at"),
+        })
+    return {"lawyers": rows}
+
+
+# NOTE: include_router MUST be after all @api_router.* decorators.
+app.include_router(api_router)
 
 
 @app.on_event("shutdown")

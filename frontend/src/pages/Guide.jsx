@@ -21,6 +21,7 @@ import {
   MapPin,
   EnvelopeSimple,
   Gift,
+  Gavel,
 } from "@phosphor-icons/react";
 
 const FEATURES = [
@@ -129,16 +130,29 @@ const FEATURES = [
   },
   {
     icon: Scroll,
-    title: "Will — AI draft · Lawyer · Witness e-sign · Notify",
+    title: "Will — AI draft · Counsel marketplace · Witness e-sign · Notify",
     link: "/app/will",
     body:
-      "A full succession workflow. Draft your Last Will and Testament with property-level allocations across named beneficiaries — or let AI draft a distribution based on your family context. Send to a lawyer for review, collect Aadhaar-backed e-signatures from witnesses, and notify each beneficiary with a password-protected PDF.",
+      "A full succession workflow. Draft your Last Will and Testament with property-level allocations across named beneficiaries — or let AI draft a distribution based on your family context. Book a verified lawyer from Estima's panel (Razorpay payment) or bring your own, collect Aadhaar-backed e-signatures from witnesses, and notify each beneficiary with a password-protected PDF.",
     tips: [
       "AI-draft — provide family context + distribution style (equal / spouse-first / legacy-trust / custom) and Claude Sonnet 4.5 returns beneficiaries + per-property splits + reasoning. You can edit anything before saving.",
-      "Lawyer review — send the Will to any lawyer via email; they review at a secure public link (30-day token) and return approved/rejected with comments. Status lands on your Will record.",
+      "Ask Estima Counsel — click Browse Estima Counsel to pick a verified family-law advocate, pay their fee via Razorpay, and they review + endorse your Will within 30 days. 10% platform fee, transparent pricing.",
+      "Bring your own lawyer — prefer a lawyer you already trust? Send them a private review link via email (no fee, no platform involvement).",
       "Witness e-sign — invite witness 1 and witness 2 via email. They sign at a public link with Aadhaar last-4 + OTP (stub OK for testing; swap for UIDAI in prod).",
       "Notify beneficiaries — single click emails each beneficiary a password-protected Will PDF (mocked Resend — logs in dev, swap for a real API key in prod).",
       "Download an Indian-Succession-Act-compliant PDF at any point.",
+    ],
+  },
+  {
+    icon: Gavel,
+    title: "Estima Counsel — for lawyers",
+    link: "/lawyer/register",
+    body:
+      "Are you a family-law counsel? Join Estima's review marketplace. Set your fee per review, receive AI-drafted Wills + context from clients, endorse them, and earn. Platform fee: 10%; we handle payments + notifications.",
+    tips: [
+      "Self-signup at /lawyer/register with Bar Council ID, specialization, rate and bio. You're live to clients once Estima verifies your profile.",
+      "Dashboard shows your queue (pending + completed), earnings total, endorsement count, and lets you update your rate/bio anytime.",
+      "Every completed review can be 'endorsed' — endorsed lawyers rank higher in the client-facing list.",
     ],
   },
   {

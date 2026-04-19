@@ -28,21 +28,24 @@ export default function Admin() {
   const [users, setUsers] = useState([]);
   const [txns, setTxns] = useState([]);
   const [feedback, setFeedback] = useState([]);
+  const [lawyers, setLawyers] = useState([]);
   const [loading, setLoading] = useState(true);
 
   const load = async () => {
     setLoading(true);
     try {
-      const [s, u, t, f] = await Promise.all([
+      const [s, u, t, f, lw] = await Promise.all([
         api.get("/admin/stats"),
         api.get("/admin/users"),
         api.get("/admin/transactions"),
         api.get("/admin/feedback"),
+        api.get("/admin/lawyers").catch(() => ({ data: { lawyers: [] } })),
       ]);
       setStats(s.data);
       setUsers(u.data);
       setTxns(t.data);
       setFeedback(f.data);
+      setLawyers(lw.data.lawyers || []);
     } catch (e) {
       toast.error(formatApiErrorDetail(e.response?.data?.detail));
     } finally {
@@ -112,6 +115,7 @@ export default function Admin() {
         {[
           ["overview", "Overview"],
           ["users", `Users (${users.length})`],
+          ["lawyers", `Lawyers (${lawyers.length})`],
           ["transactions", `Transactions (${txns.length})`],
           ["feedback", `Feedback (${feedback.length})`],
         ].map(([id, label]) => (
@@ -138,6 +142,8 @@ export default function Admin() {
         <Overview stats={stats} />
       ) : tab === "users" ? (
         <UsersTable users={users} currentUserId={user?.id} onAct={act} onLegacyTransfer={legacyTransfer} />
+      ) : tab === "lawyers" ? (
+        <LawyersTable lawyers={lawyers} onRefresh={load} />
       ) : tab === "feedback" ? (
         <FeedbackTable feedback={feedback} onRefresh={load} />
       ) : (
@@ -406,6 +412,77 @@ function FeedbackTable({ feedback, onRefresh }) {
           </div>
         );
       })}
+    </div>
+  );
+}
+
+
+function LawyersTable({ lawyers, onRefresh }) {
+  const verify = async (id, verified) => {
+    try {
+      await api.post("/admin/lawyers/verify", { lawyer_id: id, verified });
+      toast.success(verified ? "Lawyer verified" : "Verification revoked");
+      onRefresh();
+    } catch (e) {
+      toast.error(formatApiErrorDetail(e.response?.data?.detail));
+    }
+  };
+  if (!lawyers.length) {
+    return (
+      <div className="card-flat p-12 text-center text-muted-foreground" data-testid="admin-lawyers-empty">
+        No lawyers have signed up yet. Share the <code>/lawyer/register</code> page with vetted counsels.
+      </div>
+    );
+  }
+  return (
+    <div className="card-flat overflow-x-auto" data-testid="admin-lawyers-table">
+      <table className="w-full text-sm">
+        <thead>
+          <tr className="border-b hairline text-muted-foreground uppercase text-[10px] tracking-wider">
+            <th className="text-left px-4 py-3">Counsel</th>
+            <th className="text-left px-4 py-3">Bar ID</th>
+            <th className="text-left px-4 py-3">Specialization</th>
+            <th className="text-right px-4 py-3">Rate</th>
+            <th className="text-right px-4 py-3">Endorsements</th>
+            <th className="text-right px-4 py-3">Earnings</th>
+            <th className="text-center px-4 py-3">Status</th>
+            <th className="text-right px-4 py-3">Actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          {lawyers.map((lw) => (
+            <tr key={lw.id} className="border-b hairline last:border-0" data-testid={`admin-lawyer-${lw.id.slice(0, 8)}`}>
+              <td className="px-4 py-3">
+                <div>{lw.name}</div>
+                <div className="text-xs text-muted-foreground">{lw.email}</div>
+              </td>
+              <td className="px-4 py-3 text-xs">{lw.bar_council_id}</td>
+              <td className="px-4 py-3 text-xs">{lw.specialization}</td>
+              <td className="px-4 py-3 text-right num-metric">{inr(lw.rate_inr)}</td>
+              <td className="px-4 py-3 text-right">{lw.endorsement_count}</td>
+              <td className="px-4 py-3 text-right num-metric">{inr(lw.earnings_inr)}</td>
+              <td className="px-4 py-3 text-center">
+                {lw.verified ? (
+                  <span className="text-[10px] px-2 py-1 bg-[hsl(var(--secondary))]/10 text-[hsl(var(--secondary))] uppercase tracking-wider">Verified</span>
+                ) : (
+                  <span className="text-[10px] px-2 py-1 bg-yellow-500/10 text-yellow-500 uppercase tracking-wider">Pending</span>
+                )}
+              </td>
+              <td className="px-4 py-3 text-right">
+                {lw.verified ? (
+                  <button onClick={() => verify(lw.id, false)} className="btn-ghost px-3 py-1.5 text-xs" data-testid={`admin-lawyer-revoke-${lw.id.slice(0, 8)}`}>
+                    Revoke
+                  </button>
+                ) : (
+                  <button onClick={() => verify(lw.id, true)} className="btn-primary px-3 py-1.5 text-xs" data-testid={`admin-lawyer-verify-${lw.id.slice(0, 8)}`}>
+                    Verify
+                  </button>
+                )}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
     </div>
   );
 }

@@ -25,6 +25,7 @@ export default function Login() {
   useEffect(() => {
     if (user) {
       if (user.role === "tenant") nav("/tenant", { replace: true });
+      else if (user.role === "lawyer") nav("/lawyer", { replace: true });
       else nav(from, { replace: true });
     }
   }, [user, from, nav]);
@@ -41,7 +42,8 @@ export default function Login() {
       return;
     }
     toast.success("Welcome back.");
-    const target = res.user?.role === "tenant" ? "/tenant" : from;
+    const role = res.user?.role;
+    const target = role === "tenant" ? "/tenant" : role === "lawyer" ? "/lawyer" : from;
     nav(target, { replace: true });
   };
 
@@ -154,6 +156,12 @@ export default function Login() {
             No account?{" "}
             <Link to="/register" className="text-foreground underline underline-offset-4 hover:text-[hsl(var(--secondary))]" data-testid="login-to-register">
               Create one
+            </Link>
+          </div>
+          <div className="mt-3 text-xs text-muted-foreground">
+            Are you a lawyer?{" "}
+            <Link to="/lawyer/register" className="text-[hsl(var(--secondary))] underline underline-offset-4" data-testid="login-to-lawyer-register">
+              Join Estima Counsel
             </Link>
           </div>
         </form>

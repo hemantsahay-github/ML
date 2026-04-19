@@ -48,8 +48,8 @@ const features = [
   },
   {
     icon: <Scroll size={22} weight="duotone" />,
-    title: "AI Will · Lawyer · Witness e-sign",
-    body: "Let AI draft a property-level distribution, send to a lawyer for review, collect Aadhaar-backed e-signatures from witnesses, and email each beneficiary a password-protected PDF.",
+    title: "AI Will · Lawyer marketplace · Witness e-sign",
+    body: "Let AI draft a property-level distribution. Then book a verified family-law counsel from Estima's panel (pay via Razorpay, 10% platform fee), collect Aadhaar-backed witness e-signatures, and email each beneficiary a password-protected PDF.",
   },
   {
     icon: <Sparkle size={22} weight="duotone" />,
