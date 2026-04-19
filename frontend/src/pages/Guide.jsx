@@ -17,18 +17,24 @@ import {
   MapTrifold,
   Scroll,
   UserCircle,
+  ShieldCheck,
+  MapPin,
+  EnvelopeSimple,
+  Gift,
 } from "@phosphor-icons/react";
 
 const FEATURES = [
   {
     icon: Buildings,
-    title: "Properties ledger",
+    title: "Properties ledger · Nearby market · 1-click listings",
     link: "/app/properties",
     body:
-      "Add every flat, villa or plot you're evaluating — plus any you already own or have sold. Each property carries price, carpet area, loan terms, your subjective scores (location/amenities/safety/commute/resale), and optional owned/sold metadata.",
+      "Add every flat, villa or plot you're evaluating — plus any you already own or have sold. Each property carries price, carpet area, loan terms, your subjective scores (location/amenities/safety/commute/resale), and optional owned/sold metadata. Owned properties now also surface nearby rent/sqft data and a 1-click rental-listing generator.",
     tips: [
       "Use the Apply city preset row to auto-fill appreciation & yield for Bengaluru, Mumbai, Hyderabad etc.",
       "Status toggle: Evaluating (default), Owned (tracks current value, equity, rent), Sold (records gain/loss).",
+      "Nearby market card on owned properties: see community-contributed rent ₹/sqft around your locality; contribute your own data point in one tap.",
+      "\"List for rent in 1 click\" on owned cards — pick rent/deposit/furnishing, optionally ask AI to write the description, and Estima returns paste-ready deep-links for 99acres, MagicBricks, Housing.com, NoBroker, OLX, Quikr, plus a WhatsApp share text.",
       "Filter tabs at the top of the Properties page: All / Evaluating / Owned / Sold.",
     ],
   },
@@ -46,7 +52,7 @@ const FEATURES = [
   },
   {
     icon: Calculator,
-    title: "14 Calculators",
+    title: "14 Calculators with proper XIRR",
     link: "/app/calculators",
     body:
       "Every number real-estate agents never show you — now with proper XIRR, leverage-adjusted ROI, and long-horizon wealth modelling.",
@@ -98,14 +104,41 @@ const FEATURES = [
     ],
   },
   {
+    icon: ShieldCheck,
+    title: "Aadhaar tenant verification",
+    link: "/app/tenants",
+    body:
+      "Verify your tenant's Aadhaar on-file using a stubbed OTP flow (wired to UIDAI's official sandbox contract for easy prod-swap). Once verified, the card shows a \"Aadhaar verified ****XXXX\" badge — useful for rental agreements and society onboarding.",
+    tips: [
+      "Click Verify Aadhaar on any tenant card → enter last-4 digits + Aadhaar-linked phone → send OTP → confirm.",
+      "The stub accepts any 6-digit OTP; swap the handler for a real UIDAI partner (Digio, Karza, SignDesk) when ready.",
+      "Mode is stored as 'stub' on the tenant record so you can audit later.",
+    ],
+  },
+  {
+    icon: MapPin,
+    title: "Nearby market data",
+    link: "/app/properties",
+    body:
+      "See real rent and ₹/sqft data for the area around any owned property — aggregated from Estima's city presets plus community contributions. Crowd-sourced, transparent, always local.",
+    tips: [
+      "Nearby card surfaces: mean rent, median rent, rent per sqft, and the size of the comparison set.",
+      "Contribute anonymously — one tap adds your locality's rent and helps the next user.",
+      "Filters applied: city → area → type (flat/villa/plot) → BHK match.",
+    ],
+  },
+  {
     icon: Scroll,
-    title: "Will — succession planning",
+    title: "Will — AI draft · Lawyer · Witness e-sign · Notify",
     link: "/app/will",
     body:
-      "Draft a Last Will and Testament with property-level allocation across named beneficiaries. Download a printable PDF you can have witnessed.",
+      "A full succession workflow. Draft your Last Will and Testament with property-level allocations across named beneficiaries — or let AI draft a distribution based on your family context. Send to a lawyer for review, collect Aadhaar-backed e-signatures from witnesses, and notify each beneficiary with a password-protected PDF.",
     tips: [
-      "Allocations are split per property — give 100% of Flat A to spouse, 60/40 of Flat B to two children, etc.",
-      "Draft auto-saves. Review with a lawyer before signing — witnesses must be non-beneficiaries.",
+      "AI-draft — provide family context + distribution style (equal / spouse-first / legacy-trust / custom) and Claude Sonnet 4.5 returns beneficiaries + per-property splits + reasoning. You can edit anything before saving.",
+      "Lawyer review — send the Will to any lawyer via email; they review at a secure public link (30-day token) and return approved/rejected with comments. Status lands on your Will record.",
+      "Witness e-sign — invite witness 1 and witness 2 via email. They sign at a public link with Aadhaar last-4 + OTP (stub OK for testing; swap for UIDAI in prod).",
+      "Notify beneficiaries — single click emails each beneficiary a password-protected Will PDF (mocked Resend — logs in dev, swap for a real API key in prod).",
+      "Download an Indian-Succession-Act-compliant PDF at any point.",
     ],
   },
   {
@@ -121,13 +154,24 @@ const FEATURES = [
     ],
   },
   {
+    icon: Gift,
+    title: "Refer & earn · Demo mode",
+    link: "/app/referrals",
+    body:
+      "Every account gets a unique referral code — each signup via your link earns you 30 extra days of Pro, instantly. Prefer to browse first? Click \"Try the demo — no signup\" on the login page for a fully-seeded sandbox (4 sample properties, tenants, and receipts).",
+    tips: [
+      "Copy or WhatsApp-share your code from the Referrals page. Earnings credit the moment the referred user verifies their email.",
+      "Demo account is isolated — your real data is never touched. Great for sharing screenshots with a prospect.",
+    ],
+  },
+  {
     icon: Crown,
     title: "Pricing & Pro",
     link: "/pricing",
     body:
       "Free ₹0 · Pro ₹999/month or ₹9,999/year. Every new account starts with a 10-day Pro trial automatically. Or click \"Try the demo\" on the login page — no signup.",
     tips: [
-      "Pro unlocks unlimited properties, AI advisor, CSV/PDF exports, share links, cashflow finder, vs-markets chart, portfolio timeline, and Will PDF.",
+      "Pro unlocks unlimited properties, AI advisor, CSV/PDF exports, share links, cashflow finder, vs-markets chart, portfolio timeline, AI Will drafting, and Will PDF.",
       "Test payment card: 4111 1111 1111 1111 · any future expiry · any CVV.",
       "Cancel anytime — your Pro features keep working until the end of the paid period.",
     ],
@@ -158,6 +202,22 @@ const FAQS = [
   {
     q: "How do I get a refund?",
     a: "Razorpay refunds are supported within 14 days — email us from your registered email and we'll process it. Trial-mode payments in the test environment don't settle, so no refund is needed.",
+  },
+  {
+    q: "Is the Aadhaar tenant verification real?",
+    a: "The Aadhaar verification flow is intentionally stubbed (accepts any 6-digit OTP) so the whole product works end-to-end without a paid UIDAI partner. The contract matches how partners like Digio, Karza or SignDesk expose Aadhaar OTP — one backend swap turns it live. Every verified record is tagged mode='stub' for audit.",
+  },
+  {
+    q: "Will my lawyer and witnesses receive real emails?",
+    a: "Lawyer-review and witness-sign emails use a Resend mock in dev (logs to server stdout) — the signing links themselves work end-to-end. Add a RESEND_API_KEY to backend/.env to send real email. The password-protected Will PDF is generated either way.",
+  },
+  {
+    q: "How accurate is the Nearby market data?",
+    a: "Two sources: (1) Estima's curated city-rent presets per locality, and (2) anonymous user contributions. Median and mean are reported separately so outliers are visible. Always sanity-check against 99acres / MagicBricks — and please contribute a data point after you've rented out your own flat.",
+  },
+  {
+    q: "Can the AI actually draft my Will?",
+    a: "AI-draft takes your properties + family context + distribution style (equal / spouse-first / legacy-trust / custom) and returns beneficiaries + per-property allocations + reasoning. It's a starting draft, not legal advice — every output is fully editable before saving, and you should still run it past a family-law lawyer before signing.",
   },
 ];
 
@@ -198,7 +258,11 @@ export default function Guide() {
           ["Portfolio", ChartPieSlice, "/app/portfolio"],
           ["Compare", Scales, "/app/compare"],
           ["Calculators", Calculator, "/app/calculators"],
+          ["Projects", MapTrifold, "/app/projects"],
+          ["Tenants", UserCircle, "/app/tenants"],
+          ["Will", Scroll, "/app/will"],
           ["AI Advisor", Sparkle, "/app/advisor"],
+          ["Refer & earn", Gift, "/app/referrals"],
           ["Pricing", Crown, "/pricing"],
         ].map(([label, Icon, to]) => (
           <Link

@@ -1,6 +1,6 @@
 import { Link } from "react-router-dom";
 import { motion } from "framer-motion";
-import { ArrowRight, Buildings, ChartLineUp, Scales, Sparkle, MapTrifold, Scroll, UserCircle, Calculator, PlayCircle } from "@phosphor-icons/react";
+import { ArrowRight, Buildings, ChartLineUp, Scales, Sparkle, MapTrifold, Scroll, UserCircle, Calculator, PlayCircle, ShieldCheck, MapPin } from "@phosphor-icons/react";
 
 const HERO_IMG =
   "https://images.unsplash.com/photo-1774415108809-87df103ee55f?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA1NTJ8MHwxfHNlYXJjaHwxfHxkYXJrJTIwbW9vZHklMjBtb2Rlcm4lMjBhcGFydG1lbnQlMjBpbnRlcmlvciUyMGV2ZW5pbmd8ZW58MHx8fHwxNzc2NTQyMTkyfDA&ixlib=rb-4.1.0&q=85";
@@ -32,14 +32,24 @@ const features = [
     body: "Curated launches across BLR / MUM / NCR / HYD / PUN / CHN. Star-watch the ones you care about; they follow you to your Dashboard.",
   },
   {
+    icon: <MapPin size={22} weight="duotone" />,
+    title: "Nearby market data",
+    body: "Real rent and ₹/sqft around every owned property — Estima's city presets + community contributions. 1-click rental listings that deep-link to 99acres, MagicBricks, NoBroker & more.",
+  },
+  {
     icon: <UserCircle size={22} weight="duotone" />,
     title: "Tenants + rent portal",
     body: "Track tenants, generate PDF receipts, and invite them to a Razorpay-powered portal. They pay; Estima auto-generates the receipt.",
   },
   {
+    icon: <ShieldCheck size={22} weight="duotone" />,
+    title: "Aadhaar verification",
+    body: "Verify tenants and Will-witnesses with an Aadhaar OTP flow (UIDAI-contract-compatible stub today; real partner swap when you're ready).",
+  },
+  {
     icon: <Scroll size={22} weight="duotone" />,
-    title: "Draft your Will",
-    body: "Distribute each property across named beneficiaries. Downloadable PDF ready for witnesses — real succession planning, not a spreadsheet.",
+    title: "AI Will · Lawyer · Witness e-sign",
+    body: "Let AI draft a property-level distribution, send to a lawyer for review, collect Aadhaar-backed e-signatures from witnesses, and email each beneficiary a password-protected PDF.",
   },
   {
     icon: <Sparkle size={22} weight="duotone" />,
