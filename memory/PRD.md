@@ -275,3 +275,47 @@ Personal property buying options and decision making and managing — comparing 
 - Attach password-protected Will PDF to `/api/will/notify-beneficiaries` Resend call in production.
 - Add per-user rate-limit / dedupe on `/api/market/contribute`.
 
+
+## 2026-04-19 — Lawyer marketplace (Estima Counsel) · Razorpay LIVE migration
+**New role:** `users.role='lawyer'` alongside user/admin/tenant. Protected via `get_current_user` role-check on lawyer-only endpoints.
+
+**Backend endpoints (all prefixed `/api`):**
+- `POST /lawyers/register` — self-signup (email, password, name, bar_council_id, specialization, rate_inr, bio). Sets auth cookies; account starts `verified=false`.
+- `GET /lawyers` (public, no auth) — verified lawyers sorted by `(-endorsement_count, rate_inr)`. Returns `{lawyers:[...], platform_fee_pct:10}`.
+- `GET /lawyers/me` — `{user, profile:{bar_council_id, rate_inr, bio, specialization, verified, endorsement_count, earnings_inr}}`.
+- `POST /lawyers/me` — update rate_inr / specialization / bio.
+- `GET /lawyers/me/reviews` — lawyer's queue (pending + completed).
+- `POST /will/book-lawyer` — creates a will_review record + Razorpay order; returns order_id, amount(paise), razorpay_key_id, token. 10% platform fee auto-calculated and stored on review.
+- `POST /will/book-lawyer/verify` — HMAC-validates Razorpay signature, marks review.paid=true, credits `lawyer.earnings_inr += fee − platform_fee`, emails lawyer with secure review URL.
+- `POST /public/will-review/{token}/endorse` — when review.status=='reviewed', bumps assigned lawyer's `endorsement_count` and flips `will.lawyer_endorsed=true`. Idempotent.
+- `GET /admin/lawyers` — full lawyer list with status/earnings/endorsements (admin-only).
+- `POST /admin/lawyers/verify` — flip `verified` flag on a lawyer account.
+
+**Frontend:**
+- `/lawyer/register` — public lawyer self-signup.
+- `/lawyer` — protected dashboard: pending/completed/endorsements/earnings stats, editable profile (rate, bio, specialization), queue of reviews.
+- `/app/will` — added "Browse Estima Counsel" modal showing verified lawyers + Razorpay book/pay flow; "Or bring your own lawyer" still supported (original endpoint).
+- `/app/admin` — new **Lawyers** tab with Verify/Revoke actions + full listing.
+- `/login` — role-aware redirect (user→/app, tenant→/tenant, lawyer→/lawyer).
+- Landing + Guide updated: new **Estima Counsel** feature card + Guide section.
+
+**Razorpay LIVE migration:**
+- `RAZORPAY_KEY_ID` swapped from `rzp_test_Sf6hLVUPI1DcI3` → `rzp_live_SfOCoLA1sIzYKf`.
+- Verified LIVE key surfaces on `/api/billing/create-order` (Pro plan), `/api/tenant/pay/create-order` (tenant rent), `/api/will/book-lawyer` (lawyer review).
+
+**Platform economics:**
+- 10% platform fee on lawyer bookings (configurable via `LAWYER_PLATFORM_FEE_PCT` env). Lawyer keeps 90%.
+- Lawyer's earnings_inr tracked atomically via `$inc` on payment verification.
+
+**Tests:** iteration_14.json — 20/20 backend, 7/8 frontend (missing: rzp.open mock intercept — not a real issue; Will.jsx passes data.razorpay_key_id straight to checkout).
+
+**Seed data:** verified test lawyer `adv.ravi@estima.com` / `Advocate@123` (id `69e4f192664052de23481578`, rate ₹4,000).
+
+## Backlog / Next (P2)
+- Split `server.py` (~5220 lines) into domain routers (market.py, verify.py, will.py, billing.py, admin.py, **lawyers.py**).
+- Add per-lawyer review history page for users (who reviewed my Will, ratings).
+- Add client-facing review/rating after a completed lawyer review (feeds endorsement_count).
+- Admin cleanup endpoint for throwaway test-lawyer accounts.
+- Swap Resend / Twilio / UIDAI Aadhaar mocks for real providers when API keys are supplied.
+- Split large pages per SRP (deferred maintenance sprint).
+
