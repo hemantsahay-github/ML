@@ -1,0 +1,43 @@
+{
+  "summary": "Iteration 12 e2e test. Backend: 12/12 pytest passing covering market/nearby (+ city/type filter), market/contribute, aadhaar initiate+confirm (self and tenant), tenant list reflects aadhaar_verified/aadhaar_last_4, will/send-for-lawyer-review + public/will-review/{token} GET & submit, will/invite-witness + public/witness-sign/{token} GET & POST, will/notify-beneficiaries, plus regression on demo-login + properties list (4 demo props) + /api/calc/emi. Frontend: demo login OK (redirects to /app), Properties renders 4 NearbyMarketCards correctly, Aadhaar modal flow completes and UI shows 'Aadhaar verified ****1234' toast + badge, Will page exposes will-send-lawyer, witness-invite, will-notify testids. Public routes /lawyer-review/:token and /witness-sign/:token mount and show proper 'Invalid link' error states for bad tokens.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "/api/market/nearby", "issue": "Review request mentioned params {locality, property_type} but actual API uses {area, type, bhk}. Not a bug but doc mismatch."},
+      {"endpoint": "/api/verify/aadhaar/initiate", "issue": "Review request mentioned body {tenant_id, phone, aadhaar_last_4}; actual schema requires {subject_type, subject_id, aadhaar_last_4, phone, name}. Works, just a contract-doc mismatch."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "Tenants (Aadhaar modal)", "issue": "First-time demo users see an onboarding tour overlay ('Step 1 · Add your first property') that intercepts clicks on the Verify Aadhaar button on /app/tenants. Need to click 'Skip tour' first. Consider auto-dismissing tour on non-dashboard routes or raising aadhaar-modal z-index above the tour.", "selector": "[data-testid=\"tenant-aadhaar-<id>\"]", "priority": "MEDIUM"},
+      {"component": "LawyerReview / WitnessSign public pages", "issue": "When token is invalid, page renders 'Invalid link' but the outer wrapper data-testid (lawyer-review / witness-sign) is not present on the error-state branch; tests can only verify by text. Low priority.", "selector": "[data-testid=\"witness-sign\"]", "priority": "LOW"}
+    ],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration12.py",
+    "/app/test_reports/pytest/iteration_12.xml"
+  ],
+  "action_items": [
+    "(Optional) Dismiss onboarding tour automatically when navigating to /app/tenants, /app/will, /app/properties, or raise z-index of sub-page modals above the tour overlay so tour doesn't block Aadhaar / other flows.",
+    "(Optional) Keep data-testid wrapper on LawyerReview / WitnessSign in the error/invalid-token branch for testability."
+  ],
+  "critical_code_review_comments": [
+    "/app/backend/server.py is ~4805 lines — flagged for modularization (exceeds 700-line guideline). Split into routers per domain (market.py, verify.py, will.py, etc.).",
+    "/api/market/contribute accepts user-submitted data with no rate-limit / dedupe — community data could be polluted; add per-user submission caps.",
+    "/api/public/will-review/{token} and /api/public/witness-sign/{token} never check expires_at vs current time before returning content — expired tokens (30-day TTL is set but not enforced on GET) still load the Will. Recommend reject when datetime.fromisoformat(r['expires_at']) < now.",
+    "Aadhaar stub accepts ANY 6-digit OTP — correctly stubbed but ensure log line makes this explicit and mode='stub' is surfaced in prod config checks.",
+    "notify_beneficiaries generates+password-protects PDF per beneficiary but doesn't attach it to the email stub — in production the Resend call must attach pdf_bytes."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iteration12.py"
+  ],
+  "success_rate": {"backend": "100%", "frontend": "100%"},
+  "test_credentials": "demo via POST /api/auth/demo-login (cookie-based); admin@estima.com / Admin@123",
+  "seed_data_creation": "Backend tests insert a TEST_Tenant_Aadhaar tenant (phone 9876543210) on the first demo-user property, plus minimal Will payload for demo user and a 'TestCity / TEST_area' market contribution row. No explicit cleanup — safe because demo user is wiped on next demo-login or scoped to demo.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Demo user app routes are under /app/<page> (not /<page>). Onboarding tour intercepts clicks on /app pages for new demo sessions — dismiss via 'Skip tour' text before interacting with page buttons. Aadhaar stub OTP accepts ANY 6 digits (not a fixed 123456). Public Will review endpoint is /api/public/will-review/{token} (not /api/public/lawyer-review/{token}). Will schema expects witness_1/witness_2 as plain strings. Tenant create requires property_id. All iteration-12 backend endpoints responded 200 under demo session.",
+  "rca of the issue": "N/A — no blocking issues. Two minor MVP-readiness items: (1) onboarding tour blocks sub-page buttons for new sessions; (2) expires_at on lawyer-review / witness-sign tokens is stored but not enforced on GET."
+}
