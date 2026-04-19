@@ -34,6 +34,7 @@ import hashlib
 import razorpay
 
 from city_presets import CITY_PRESETS
+from city_projects import UPCOMING_PROJECTS
 import notifications as notify
 import requests as httpx_requests
 
@@ -1392,7 +1393,10 @@ class ResaleEstimateRequest(BaseModel):
     appreciation_pct: float = 6.0           # if current_value absent
     maintenance_monthly: float = 0.0
     property_tax_yearly: float = 0.0
-    rental_income_monthly: float = 0.0       # offsets carrying cost
+    rental_income_monthly: float = 0.0       # legacy — used when min/current not provided
+    min_rent_monthly: Optional[float] = None   # lowest rent received during hold
+    current_rent_monthly: Optional[float] = None   # latest / current rent
+    misc_expenses_inr: float = 0.0           # one-time renovation/repair/furnishing (total over hold period)
     broker_fee_pct: float = 1.0              # on sale price
     ltcg_pct: float = 20.0                   # India LTCG on property (indexed) ~20%
     target_profit_inr: float = 500000.0
@@ -1403,17 +1407,20 @@ async def resale_estimate(body: ResaleEstimateRequest):
     years = max(body.years_held, 0.01)
     projected_value = body.current_value if body.current_value else body.purchase_price * ((1 + body.appreciation_pct / 100) ** years)
 
+    # Average rent: if both min + current provided, use their average; else fallback to rental_income_monthly
+    if body.min_rent_monthly is not None and body.current_rent_monthly is not None:
+        avg_rent = (body.min_rent_monthly + body.current_rent_monthly) / 2
+    elif body.current_rent_monthly is not None:
+        avg_rent = body.current_rent_monthly
+    else:
+        avg_rent = body.rental_income_monthly
+
     # carrying costs already borne
     monthly_costs = body.maintenance_monthly + body.property_tax_yearly / 12
-    total_carry = monthly_costs * 12 * years
-    total_rent = body.rental_income_monthly * 12 * years
+    total_carry = monthly_costs * 12 * years + body.misc_expenses_inr
+    total_rent = avg_rent * 12 * years
     net_carry = total_carry - total_rent  # positive = out-of-pocket, negative = net-positive
 
-    # Breakeven: sale_price that zeroes out total capital deployed
-    # proceeds_net = sale_price * (1 - broker/100) - outstanding_loan - ltcg_on_gain
-    # total_deployed = (purchase_price - loan_originally) + net_carry  (approx; use purchase_price + net_carry - loan_paid_down)
-    # For simplicity: break-even = purchase_price + net_carry after tax + broker
-    # We solve for S such that S*(1-b) - loan - max(0, S - purchase_price)*ltcg = purchase_price + net_carry
     b = body.broker_fee_pct / 100
     ltcg = body.ltcg_pct / 100
     loan = body.outstanding_loan
@@ -1427,11 +1434,7 @@ async def resale_estimate(body: ResaleEstimateRequest):
         return S * (1 - b) - loan - tax
 
     def _solve_for_target_net(target):
-        # Target: _net_proceeds(S) - nc - (P - loan_paid_off_approx) >= target
-        # We simplify: user wants "money in hand after everything" = net proceeds - net_carry
-        # target = net_proceeds - net_carry  → net_proceeds = target + net_carry
         target_np = target + nc
-        # bisection on S in [0, P*20]
         lo, hi = 0.0, max(P * 20, 1e9)
         for _ in range(60):
             mid = (lo + hi) / 2
@@ -1448,8 +1451,7 @@ async def resale_estimate(body: ResaleEstimateRequest):
     projected_net_after_carry = projected_np - nc
     implied_annual_return = 0.0
     if P > 0 and years > 0:
-        # CAGR on net-to-pocket vs capital invested (approx: down_payment = P - (loan_originally≈loan))
-        capital_invested = max(P - loan, 1)  # rough proxy
+        capital_invested = max(P - loan, 1)
         if projected_net_after_carry > 0:
             implied_annual_return = ((projected_net_after_carry / capital_invested) ** (1 / years) - 1) * 100 if capital_invested > 0 else 0
 
@@ -1461,6 +1463,8 @@ async def resale_estimate(body: ResaleEstimateRequest):
         "breakeven_sale_price": round(breakeven_price, 2),
         "target_profit_sale_price": round(target_price, 2),
         "total_carrying_cost": round(total_carry, 2),
+        "misc_expenses": round(body.misc_expenses_inr, 2),
+        "average_rent_used": round(avg_rent, 2),
         "total_rental_income": round(total_rent, 2),
         "net_carrying_cost": round(net_carry, 2),
         "implied_annual_return_pct": round(implied_annual_return, 2),
@@ -1482,28 +1486,67 @@ class LoanOptimizerRequest(BaseModel):
     loan_tenure_years: int = 20
     maintenance_monthly: float = 2000.0
     property_tax_yearly: float = 0.0
+    # Under-construction mode
+    under_construction: bool = False
+    possession_months: int = 0           # months till possession (for UC projects)
+    pre_emi_only: bool = True            # if True, during construction buyer pays interest-only on disbursed loan
+    disbursement_schedule: str = "linear"  # "linear" | "clp" (CLP = 10-20-20-20-20-10 style)
+    subvention_by_builder: bool = False   # if True, builder bears pre-EMI till possession
 
 
 @api_router.post("/calc/loan-optimizer")
 async def loan_optimizer(body: LoanOptimizerRequest):
     costs_monthly = body.maintenance_monthly + body.property_tax_yearly / 12
     grid = []
+    months_build = max(body.possession_months if body.under_construction else 0, 0)
+    r_m = (body.loan_rate / 100) / 12
+
+    # CLP-style disbursement percentages across construction months (fallback to linear)
+    def _avg_disbursement_frac():
+        if not body.under_construction or months_build <= 0:
+            return 1.0
+        if body.disbursement_schedule == "clp":
+            # model: 20% booking, 20% mid, 20% 60%, 20% finishing, 20% on possession
+            # avg disbursed over build = 0.5 (roughly — integral of ramp)
+            return 0.5
+        return 0.5  # linear ramp average
+
+    avg_frac = _avg_disbursement_frac()
+
     for pct in range(5, 101, 5):
         dp = body.property_price * pct / 100
         loan = body.property_price - dp
         emi = _emi(loan, body.loan_rate, body.loan_tenure_years)
-        cashflow = body.monthly_rent - emi - costs_monthly
-        # simple ROI proxy: annual cashflow / dp
-        annual_cashflow = cashflow * 12
+
+        pre_emi_total = 0.0
+        pre_emi_per_month = 0.0
+        if body.under_construction and months_build > 0 and loan > 0:
+            # Interest-only during construction on the AVERAGE disbursed amount
+            avg_disbursed = loan * avg_frac
+            pre_emi_per_month = avg_disbursed * r_m
+            pre_emi_total = pre_emi_per_month * months_build
+            if body.subvention_by_builder:
+                pre_emi_total = 0.0
+                pre_emi_per_month = 0.0
+
+        cashflow_after_possession = body.monthly_rent - emi - costs_monthly
+        annual_cashflow = cashflow_after_possession * 12
         roi = (annual_cashflow / dp * 100) if dp > 0 else 0
+
+        # Effective first-year outflow incl. pre-EMI if UC
+        first_year_outflow = dp + pre_emi_total + (max(0, -cashflow_after_possession) * max(12 - months_build, 0))
+
         grid.append({
             "down_payment_pct": pct,
             "down_payment": round(dp, 2),
             "loan": round(loan, 2),
             "emi": round(emi, 2),
-            "monthly_cashflow": round(cashflow, 2),
+            "monthly_cashflow": round(cashflow_after_possession, 2),
             "annual_cashflow": round(annual_cashflow, 2),
             "cash_on_cash_return_pct": round(roi, 2),
+            "pre_emi_monthly": round(pre_emi_per_month, 2),
+            "pre_emi_total": round(pre_emi_total, 2),
+            "first_year_outflow": round(first_year_outflow, 2),
         })
 
     # find sweet spots
@@ -1518,6 +1561,10 @@ async def loan_optimizer(body: LoanOptimizerRequest):
         "max_cashflow": best_positive,
         "best_cash_on_cash_return": best_coc,
         "costs_monthly": round(costs_monthly, 2),
+        "under_construction": body.under_construction,
+        "possession_months": months_build,
+        "subvention_by_builder": body.subvention_by_builder,
+        "disbursement_schedule": body.disbursement_schedule,
     }
 
 
@@ -2435,6 +2482,381 @@ async def admin_update_feedback(fid: str, body: dict, user: dict = Depends(get_c
     status = body.get("status", "triaged")
     await db.feedback.update_one({"id": fid}, {"$set": {"status": status}})
     return {"ok": True}
+
+
+# ------------------------------------------------------------
+# Wealth Narrative — property-first long-term wealth logic
+# ------------------------------------------------------------
+class WealthNarrativeRequest(BaseModel):
+    property_price: float = 10000000
+    down_payment_pct: float = 20
+    loan_rate: float = 8.5
+    loan_tenure_years: int = 20
+    appreciation_pct: float = 7.0
+    city_tier: Literal["tier1", "tier2", "tier3"] = "tier1"
+    monthly_rent_today: float = 30000        # what you'd pay to rent equivalent
+    rent_increase_pct: float = 8.0
+    alt_return_pct: float = 12.0             # Nifty/MF alternative
+    horizon_years: int = 25
+    pass_to_generation: bool = True           # 0-cost inheritance for family
+    legacy_bonus_pct: float = 15.0            # illiquidity premium for a held legacy asset
+
+
+@api_router.post("/calc/wealth-narrative")
+async def wealth_narrative(body: WealthNarrativeRequest):
+    """Long-horizon property vs rent+invest comparison with:
+        - rent inflation over the full horizon,
+        - capital appreciation of the property,
+        - EMI ending after tenure → 100% owned,
+        - optional generational-transfer bonus (zero tax at inheritance in India for real estate),
+        - tier-1 premium kicker on appreciation.
+    """
+    price = body.property_price
+    dp = price * body.down_payment_pct / 100
+    loan = price - dp
+    emi = _emi(loan, body.loan_rate, body.loan_tenure_years)
+    appr = body.appreciation_pct / 100
+    if body.city_tier == "tier1":
+        appr *= 1.15  # tier-1 premium: well-located tier-1 tends to outpace index appreciation
+    elif body.city_tier == "tier3":
+        appr *= 0.85
+
+    r_alt = body.alt_return_pct / 100
+    r_rent = body.rent_increase_pct / 100
+
+    series = []
+    rent_inv = dp  # renter invests the down payment instead
+    cum_rent_paid = 0
+    cum_emi_paid = 0
+    monthly_rent = body.monthly_rent_today
+    monthly_emi = emi
+    tenure_months = body.loan_tenure_years * 12
+
+    for y in range(1, body.horizon_years + 1):
+        year_rent = monthly_rent * 12 * ((1 + r_rent) ** 0.5)  # mid-year approximation
+        year_emi = monthly_emi * 12 if y * 12 <= tenure_months else 0
+        cum_rent_paid += year_rent
+        cum_emi_paid += year_emi
+
+        # Property compounded value
+        prop_value = price * ((1 + appr) ** y)
+
+        # Renter's alternative portfolio: dp compounded + each year's rent-save (if any) invested
+        # net monthly difference: emi (if owed) - rent
+        rent_inv = rent_inv * (1 + r_alt)
+        # Renter saves emi-vs-rent delta only when emi > rent? In India reality: buyer pays emi out of same income
+        # Fair comparison: renter invests the DIFFERENCE (emi - rent) in alt every year
+        annual_diff = (monthly_emi * 12 if y * 12 <= tenure_months else 0) - monthly_rent * 12
+        if annual_diff > 0:
+            rent_inv += annual_diff * (1 + r_alt) ** 0.5  # mid-year invest
+        # if annual_diff < 0, renter could invest it too; but buyer also has extra after tenure
+
+        # Post-tenure: buyer has no EMI → imagine buyer starts investing emi equivalent into alt
+        # (accumulated into buy_savings_postTenure below)
+
+        # Buyer net worth = property value + (savings after tenure) - outstanding loan balance
+        months_paid = min(y * 12, tenure_months)
+        outstanding_loan = _loan_balance(loan, body.loan_rate, body.loan_tenure_years, months_paid)
+        buy_assets = prop_value - outstanding_loan
+        buy_savings_postTenure = emi * 12 * max(0, y - body.loan_tenure_years) * (1 + r_alt) ** (max(0, y - body.loan_tenure_years) / 2)
+        buy_nw = buy_assets + buy_savings_postTenure
+
+        series.append({
+            "year": y,
+            "property_value": round(prop_value, 2),
+            "outstanding_loan": round(outstanding_loan, 2),
+            "buy_net_worth": round(buy_nw, 2),
+            "rent_net_worth": round(rent_inv, 2),
+            "rent_paid_cumulative": round(cum_rent_paid, 2),
+            "monthly_rent_this_year": round(monthly_rent, 2),
+        })
+
+        monthly_rent *= (1 + r_rent)
+
+    final = series[-1]
+    buy_wealth = final["buy_net_worth"]
+    if body.pass_to_generation:
+        buy_wealth *= (1 + body.legacy_bonus_pct / 100)
+    rent_wealth = final["rent_net_worth"]
+    delta = buy_wealth - rent_wealth
+    crossover = next((s["year"] for s in series if s["buy_net_worth"] >= s["rent_net_worth"]), None)
+
+    narratives = [
+        f"Over {body.horizon_years} years, your property compounds at ~{round(appr*100,1)}% p.a. — index appreciation plus the tier-1 premium of being in a land-constrained city.",
+        f"Rent starting at ₹{int(body.monthly_rent_today):,}/mo grows to ₹{int(final['monthly_rent_this_year']):,}/mo by year {body.horizon_years} — an annual compounding that you escape the moment you own.",
+        f"EMI ends after year {body.loan_tenure_years}. From year {body.loan_tenure_years+1} onwards every rupee that used to go to the bank becomes investable — compounding into your net worth.",
+        f"Total rent you would have paid across the horizon: ₹{int(final['rent_paid_cumulative']):,}. This money is gone forever.",
+    ]
+    if body.pass_to_generation:
+        narratives.append(f"Generational transfer: in India, property transferred via will/inheritance attracts 0% capital gains at the point of transfer — a {body.legacy_bonus_pct}% illiquidity/legacy premium is applied.")
+    if crossover:
+        narratives.append(f"Property net worth crosses rent-invest portfolio in year {crossover}.")
+
+    return {
+        "inputs": body.model_dump(),
+        "series": series,
+        "final_buy_wealth": round(buy_wealth, 2),
+        "final_rent_wealth": round(rent_wealth, 2),
+        "delta": round(delta, 2),
+        "winner": "Buy" if delta > 0 else "Rent",
+        "crossover_year": crossover,
+        "narratives": narratives,
+        "tier_premium_applied_pct": round((appr - body.appreciation_pct / 100) * 100, 2),
+    }
+
+
+def _loan_balance(principal: float, rate_annual_pct: float, tenure_years: int, months_paid: int) -> float:
+    """Outstanding loan balance after `months_paid` EMIs."""
+    if principal <= 0 or months_paid <= 0:
+        return max(principal, 0)
+    r = (rate_annual_pct / 100) / 12
+    n = tenure_years * 12
+    if r == 0:
+        return max(principal - (principal / n) * months_paid, 0)
+    m = months_paid
+    # Standard amortization: bal = P * ((1+r)^n - (1+r)^m) / ((1+r)^n - 1)
+    bal = principal * (((1 + r) ** n) - ((1 + r) ** m)) / (((1 + r) ** n) - 1)
+    return max(bal, 0)
+
+
+# ------------------------------------------------------------
+# Rent-for-cashflow — what rent makes owned property cashflow-positive in N years
+# ------------------------------------------------------------
+class RentForCashflowRequest(BaseModel):
+    current_value: float = 8000000
+    outstanding_loan: float = 4500000
+    current_emi: float                      # your actual EMI
+    current_rent: float = 0                  # what it rents for today (0 if vacant)
+    rent_increase_pct: float = 8.0
+    maintenance_monthly: float = 3000.0
+    property_tax_yearly: float = 12000.0
+    target_years_to_positive: int = 3        # must be CF-positive by year N
+
+
+@api_router.post("/calc/rent-for-cashflow")
+async def rent_for_cashflow(body: RentForCashflowRequest):
+    costs_monthly = body.maintenance_monthly + body.property_tax_yearly / 12
+    # rent must cover: emi + costs at year N
+    # current_rent * (1+g)^N >= emi + costs
+    g = body.rent_increase_pct / 100
+    required_rent_at_year_n = body.current_emi + costs_monthly
+    required_rent_today = required_rent_at_year_n / ((1 + g) ** body.target_years_to_positive)
+    gap_today = max(required_rent_today - body.current_rent, 0)
+
+    # Year-by-year trajectory of cashflow at current rent
+    trajectory = []
+    rent = body.current_rent if body.current_rent > 0 else required_rent_today
+    year_to_neutral = None
+    for y in range(1, 16):
+        cashflow = rent - body.current_emi - costs_monthly
+        trajectory.append({
+            "year": y,
+            "rent": round(rent, 2),
+            "emi": round(body.current_emi, 2),
+            "costs": round(costs_monthly, 2),
+            "monthly_cashflow": round(cashflow, 2),
+        })
+        if cashflow >= 0 and year_to_neutral is None:
+            year_to_neutral = y
+        rent *= (1 + g)
+
+    gross_yield_today = (body.current_rent * 12 / body.current_value * 100) if body.current_value else 0
+    required_yield = (required_rent_today * 12 / body.current_value * 100) if body.current_value else 0
+
+    return {
+        "required_rent_today": round(required_rent_today, 2),
+        "required_rent_at_target_year": round(required_rent_at_year_n, 2),
+        "current_rent": round(body.current_rent, 2),
+        "gap_monthly": round(gap_today, 2),
+        "gap_annual": round(gap_today * 12, 2),
+        "gross_yield_today_pct": round(gross_yield_today, 2),
+        "required_gross_yield_pct": round(required_yield, 2),
+        "target_years": body.target_years_to_positive,
+        "year_cashflow_turns_positive": year_to_neutral,
+        "trajectory": trajectory,
+        "verdict": (
+            "Already cashflow-positive" if body.current_rent >= required_rent_at_year_n
+            else f"Increase rent by ₹{int(gap_today):,}/mo OR wait {body.target_years_to_positive} years if your rent grows {body.rent_increase_pct}% p.a."
+        ),
+    }
+
+
+# ------------------------------------------------------------
+# Prepayment analysis — part-payment vs full-prepay vs invest-surplus
+# ------------------------------------------------------------
+class PrepaymentRequest(BaseModel):
+    outstanding_loan: float = 4500000
+    loan_rate: float = 8.5
+    remaining_tenure_years: float = 15
+    current_emi: float = 39200
+    surplus_amount: float = 1000000          # lumpsum available
+    alt_invest_return_pct: float = 12.0       # if instead you invest surplus in MF
+    mode: Literal["part", "full", "invest", "all"] = "all"
+    rental_income_monthly: float = 0.0        # for owned rental property
+    maintenance_monthly: float = 0.0
+    property_tax_yearly: float = 0.0
+
+
+@api_router.post("/calc/prepayment-analysis")
+async def prepayment_analysis(body: PrepaymentRequest):
+    loan = body.outstanding_loan
+    r = (body.loan_rate / 100) / 12
+    n = int(body.remaining_tenure_years * 12)
+    emi = body.current_emi
+    surplus = body.surplus_amount
+
+    # Interest saved on part payment (assuming tenure unchanged, EMI drops) — we compute both scenarios
+    # Scenario A: Part payment reduces PRINCIPAL, EMI recalculated for remaining tenure
+    new_principal_A = max(loan - surplus, 0)
+    new_emi_A = _emi(new_principal_A, body.loan_rate, int(body.remaining_tenure_years))
+    total_outflow_old = emi * n
+    total_outflow_A = new_emi_A * n + surplus
+    interest_saved_A = total_outflow_old - total_outflow_A
+
+    # Scenario B: Full prepayment — only possible if surplus >= loan
+    can_full = surplus >= loan
+    if can_full:
+        cash_leftover_B = surplus - loan
+        interest_saved_B = emi * n - loan
+        # leftover invested at alt return till loan would have ended
+        final_leftover = cash_leftover_B * ((1 + body.alt_invest_return_pct / 100) ** body.remaining_tenure_years)
+    else:
+        cash_leftover_B = 0
+        interest_saved_B = 0
+        final_leftover = 0
+
+    # Scenario C: Invest surplus in MF at alt_invest_return_pct
+    years = body.remaining_tenure_years
+    alt_final = surplus * ((1 + body.alt_invest_return_pct / 100) ** years)
+    # Net wealth from Scenario C at end: alt_final (minus continuing EMI on full loan)
+
+    # Scenario D: Part payment + continue investing monthly savings (emi - new_emi) into MF
+    monthly_emi_savings = max(emi - new_emi_A, 0)
+    if monthly_emi_savings > 0 and r != 0:
+        # future value of an annuity of monthly savings for (remaining_tenure) months at alt rate (monthly)
+        r_alt_m = (body.alt_invest_return_pct / 100) / 12
+        fv_savings = monthly_emi_savings * ((((1 + r_alt_m) ** n) - 1) / r_alt_m) if r_alt_m > 0 else monthly_emi_savings * n
+    else:
+        fv_savings = 0
+
+    # Rental implication: if rental property, part-payment increases monthly cashflow immediately
+    cashflow_today_before = body.rental_income_monthly - emi - body.maintenance_monthly - body.property_tax_yearly / 12
+    cashflow_today_after_part = body.rental_income_monthly - new_emi_A - body.maintenance_monthly - body.property_tax_yearly / 12
+    cashflow_today_after_full = body.rental_income_monthly - body.maintenance_monthly - body.property_tax_yearly / 12 if can_full else cashflow_today_before
+
+    scenarios = [
+        {
+            "id": "part",
+            "name": "Part payment (lumpsum)",
+            "principal_after": round(new_principal_A, 2),
+            "new_emi": round(new_emi_A, 2),
+            "interest_saved": round(interest_saved_A, 2),
+            "monthly_cashflow_delta": round(cashflow_today_after_part - cashflow_today_before, 2),
+            "effective_roi_pct": round((interest_saved_A / surplus * 100) / years if surplus > 0 else 0, 2),
+            "best_for": "Owned rental where cashflow matters now and loan-rate > alt-return.",
+        },
+        {
+            "id": "full",
+            "name": "Full prepayment",
+            "principal_after": 0,
+            "new_emi": 0,
+            "interest_saved": round(interest_saved_B, 2),
+            "monthly_cashflow_delta": round(cashflow_today_after_full - cashflow_today_before, 2) if can_full else 0,
+            "leftover_cash_invested_final": round(final_leftover, 2) if can_full else 0,
+            "effective_roi_pct": round((interest_saved_B / surplus * 100) / years if surplus > 0 and can_full else 0, 2),
+            "feasible": can_full,
+            "best_for": "When the loan is near-end and emotional freedom > arbitrage.",
+        },
+        {
+            "id": "invest",
+            "name": "Invest surplus instead",
+            "final_alt_value": round(alt_final, 2),
+            "vs_part_interest_saved": round(alt_final - surplus - interest_saved_A, 2),
+            "effective_roi_pct": body.alt_invest_return_pct,
+            "best_for": f"When alt return {body.alt_invest_return_pct}% > loan rate {body.loan_rate}%.",
+        },
+        {
+            "id": "part_plus_invest_savings",
+            "name": "Part payment + invest EMI savings",
+            "principal_after": round(new_principal_A, 2),
+            "new_emi": round(new_emi_A, 2),
+            "interest_saved": round(interest_saved_A, 2),
+            "monthly_emi_savings": round(monthly_emi_savings, 2),
+            "final_fv_of_emi_savings": round(fv_savings, 2),
+            "total_benefit": round(interest_saved_A + fv_savings, 2),
+            "best_for": "Hybrid — best of both worlds when alt ≈ loan rate.",
+        },
+    ]
+
+    # Winner logic
+    def _net_benefit(s):
+        if s["id"] == "part":
+            return s["interest_saved"]
+        if s["id"] == "full":
+            return s["interest_saved"] + s.get("leftover_cash_invested_final", 0) if s.get("feasible") else -1e18
+        if s["id"] == "invest":
+            return alt_final - surplus  # net gain over just holding cash
+        if s["id"] == "part_plus_invest_savings":
+            return s["total_benefit"]
+        return 0
+
+    winner = max(scenarios, key=_net_benefit)
+
+    return {
+        "inputs": body.model_dump(),
+        "scenarios": scenarios,
+        "winner": winner["id"],
+        "winner_name": winner["name"],
+        "current_monthly_cashflow": round(cashflow_today_before, 2),
+    }
+
+
+# ------------------------------------------------------------
+# Builder / Upcoming projects directory
+# ------------------------------------------------------------
+@api_router.get("/builder-projects")
+async def list_projects(city: Optional[str] = None, area: Optional[str] = None, status: Optional[str] = None):
+    """Return curated upcoming / under-construction projects. Filterable by city + area."""
+    projects = list(UPCOMING_PROJECTS)
+    # Load user-submitted projects from DB (admins or user-contributed)
+    try:
+        extra = await db.community_projects.find({}, {"_id": 0}).to_list(500)
+        projects = projects + extra
+    except Exception:
+        pass
+    if city:
+        projects = [p for p in projects if p.get("city", "").lower() == city.lower()]
+    if area:
+        projects = [p for p in projects if area.lower() in p.get("area", "").lower()]
+    if status:
+        projects = [p for p in projects if p.get("status", "").lower() == status.lower()]
+    cities = sorted({p["city"] for p in UPCOMING_PROJECTS})
+    return {"projects": projects, "count": len(projects), "cities": cities}
+
+
+class CommunityProjectIn(BaseModel):
+    city: str
+    area: str
+    name: str
+    builder: str
+    status: str = "Upcoming"
+    possession: str = ""
+    config: str = ""
+    price_from_inr: float = 0
+    price_per_sqft: float = 0
+    highlight: str = ""
+    rera_id: str = ""
+
+
+@api_router.post("/builder-projects/community")
+async def submit_community_project(body: CommunityProjectIn, user: dict = Depends(get_current_user)):
+    doc = body.model_dump()
+    doc["id"] = f"u-{uuid.uuid4().hex[:10]}"
+    doc["submitted_by"] = user["id"]
+    doc["submitted_at"] = datetime.now(timezone.utc).isoformat()
+    await db.community_projects.insert_one(doc.copy())
+    doc.pop("_id", None)
+    return doc
 
 
 # ------------------------------------------------------------

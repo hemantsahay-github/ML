@@ -1,0 +1,64 @@
+{
+  "summary": "Iteration-8 testing complete — all 6 new capabilities (Wealth Narrative, Loan Optimizer UC, Rent-for-Cashflow, Resale extension, Prepayment Analysis, Builder Projects directory) pass both backend pytest (12/12) and frontend Playwright UI checks. Landing page rick-roll regression verified fixed.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Calculators (Wealth / Rent-for-cashflow tabs)", "issues": ["Recharts console warning: 'width(-1) and height(-1) of chart should be greater than 0'. Chart still renders after resize but emits a transient warning on mount — cosmetic only, consider setting minWidth/minHeight on ResponsiveContainer parent."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration8.py",
+    "/app/test_reports/pytest/iteration8_results.xml"
+  ],
+  "action_items": [
+    "Optional: wrap Recharts ResponsiveContainer in a parent with explicit height (e.g. h-[280px]) so the 'width(-1) height(-1)' console warning disappears on first render of Wealth & Rent-for-cashflow trajectory charts."
+  ],
+  "critical_code_review_comments": [
+    "server.py is 2948 lines — getting large. Consider splitting calculators (wealth/rent-for-cashflow/prepayment/resale/loan-optimizer) into /app/backend/routers/calc.py to stay under the 700-line guideline.",
+    "city_projects.py is a static list — fine for MVP, but mentioned RERA IDs should be validated before launch (a few say 'RERA pending').",
+    "/api/builder-projects/community correctly strips _id after insert (good), uses uuid ids prefixed 'u-', and requires auth via Depends(get_current_user). No issues.",
+    "Subvention flag correctly zeros pre_emi_total/monthly across the full DP grid — verified.",
+    "Tier-1 premium (appreciation * 1.15) and legacy bonus (*1.15) are applied correctly; tier-3 penalty (*0.85) returns negative tier_premium_applied_pct — verified."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iteration8.py (new)"
+  ],
+  "success_rate": {"backend": "100% (12/12)", "frontend": "100% on tested flows"},
+  "test_credentials": "admin@estima.com / Admin@123 (used for auth-gated community submission + all UI). smoke@test.com not needed.",
+  "seed_data_creation": "Test created 1 community project named 'TEST_Project_IT8' (id prefix 'u-') via POST /api/builder-projects/community as part of the authenticated test. Visible in subsequent GET /api/builder-projects. Consider periodic cleanup of TEST_* submissions.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Iteration 8 verified: wealth-narrative, rent-for-cashflow, prepayment-analysis, resale (min/current rent + misc), loan-optimizer UC (CLP + subvention), builder-projects (GET + community POST). All 10 calculator tabs present with default 'wealth'. Projects page at /app/projects renders 18 cards (15 curated + community). Landing page rick-roll removed (0 YouTube links; 'Coming soon' badge present). Tour modal is dismissed via [data-testid='tour-skip']. Test data: 1 TEST_Project_IT8 left in community_projects collection.",
+  "backend_test_summary": {
+    "total": 12,
+    "passed": 12,
+    "failed": 0,
+    "coverage": [
+      "POST /api/calc/wealth-narrative (tier1 + tier3 premium)",
+      "POST /api/calc/loan-optimizer (under_construction CLP + subvention)",
+      "POST /api/calc/rent-for-cashflow",
+      "POST /api/calc/resale-estimate (min+current rent avg + misc)",
+      "POST /api/calc/prepayment-analysis (4 scenarios + winner)",
+      "GET /api/builder-projects (all, city=Bengaluru, area=whitefield)",
+      "POST /api/builder-projects/community (unauth 401 + auth 200)"
+    ]
+  },
+  "frontend_test_summary": {
+    "verified_flows": [
+      "Login -> /app -> tour-skip dismissal",
+      "Calculators page default tab = 'wealth', all 10 tabs clickable",
+      "Wealth Narrative run -> winner banner + narratives + trajectory",
+      "Prepayment run -> 4 scenario cards (part/full/invest/part_plus_invest_savings)",
+      "Rent-for-cashflow run -> verdict + trajectory",
+      "Loan Optimizer UC toggle -> run -> Pre-EMI column appears",
+      "Resale run -> 'Avg rent used' visible in result; Min rent + Current rent + Misc/renovation inputs present (confirmed via screenshot — labels are CSS-uppercased)",
+      "Projects page -> 18 cards, 3 filter chips, submit modal opens",
+      "Landing page -> 'Coming soon' text present, 0 YouTube links (rick-roll regression fix verified)"
+    ]
+  }
+}

@@ -17,17 +17,20 @@ import {
 } from "recharts";
 
 const tabs = [
+  { id: "wealth", label: "Why buy (wealth)" },
   { id: "emi", label: "EMI" },
   { id: "rentbuy", label: "Rent vs Buy" },
   { id: "invest", label: "Property vs MF vs Equity" },
   { id: "cashflow", label: "Cashflow-positive finder" },
+  { id: "rentcf", label: "Rent-for-cashflow" },
   { id: "resale", label: "Resale estimator" },
   { id: "optimizer", label: "Loan optimizer" },
   { id: "builder", label: "Builder plan" },
+  { id: "prepay", label: "Prepay vs Invest" },
 ];
 
 export default function Calculators() {
-  const [tab, setTab] = useState("emi");
+  const [tab, setTab] = useState("wealth");
   return (
     <div className="max-w-7xl mx-auto px-8 py-10" data-testid="calculators-page">
       <div className="mb-8">
@@ -56,13 +59,16 @@ export default function Calculators() {
         ))}
       </div>
 
+      {tab === "wealth" && <WealthNarrative />}
       {tab === "emi" && <EmiCalc />}
       {tab === "rentbuy" && <RentBuyCalc />}
       {tab === "invest" && <InvestCalc />}
       {tab === "cashflow" && <CashflowPositiveCalc />}
+      {tab === "rentcf" && <RentForCashflow />}
       {tab === "resale" && <ResaleEstimator />}
       {tab === "optimizer" && <LoanOptimizer />}
       {tab === "builder" && <BuilderPlan />}
+      {tab === "prepay" && <PrepaymentAnalysis />}
 
       <Disclaimer />
     </div>
@@ -169,6 +175,9 @@ function ResaleEstimator() {
     maintenance_monthly: 3500,
     property_tax_yearly: 15000,
     rental_income_monthly: 28000,
+    min_rent_monthly: 20000,
+    current_rent_monthly: 32000,
+    misc_expenses_inr: 150000,
     broker_fee_pct: 1,
     ltcg_pct: 20,
     target_profit_inr: 500000,
@@ -198,7 +207,11 @@ function ResaleEstimator() {
         </div>
         <NumberField label="Maint / month (₹)" value={form.maintenance_monthly} onChange={(v) => setForm({ ...form, maintenance_monthly: v })} />
         <NumberField label="Tax / year (₹)" value={form.property_tax_yearly} onChange={(v) => setForm({ ...form, property_tax_yearly: v })} />
-        <NumberField label="Rental income ₹/mo" value={form.rental_income_monthly} onChange={(v) => setForm({ ...form, rental_income_monthly: v })} />
+        <div className="grid grid-cols-2 gap-3">
+          <NumberField label="Min rent ₹/mo" value={form.min_rent_monthly} onChange={(v) => setForm({ ...form, min_rent_monthly: v })} />
+          <NumberField label="Current rent ₹/mo" value={form.current_rent_monthly} onChange={(v) => setForm({ ...form, current_rent_monthly: v })} />
+        </div>
+        <NumberField label="Misc / renovation (₹ total)" value={form.misc_expenses_inr} onChange={(v) => setForm({ ...form, misc_expenses_inr: v })} />
         <div className="grid grid-cols-2 gap-3">
           <NumberField label="Broker fee %" value={form.broker_fee_pct} step="0.1" onChange={(v) => setForm({ ...form, broker_fee_pct: v })} />
           <NumberField label="LTCG %" value={form.ltcg_pct} step="0.5" onChange={(v) => setForm({ ...form, ltcg_pct: v })} />
@@ -228,7 +241,11 @@ function ResaleEstimator() {
               <div className="eyebrow mb-3">Cost breakdown during hold</div>
               <div className="grid md:grid-cols-3 gap-3 text-sm">
                 <LabRow label="Total carrying cost" v={inr(res.total_carrying_cost)} />
+                <LabRow label="Avg rent used (₹/mo)" v={inr(res.average_rent_used)} />
                 <LabRow label="Total rental income" v={inr(res.total_rental_income)} accent="good" />
+              </div>
+              <div className="grid md:grid-cols-2 gap-3 text-sm mt-3">
+                <LabRow label="Misc / renovation spend" v={inr(res.misc_expenses)} accent={res.misc_expenses > 0 ? "bad" : undefined} />
                 <LabRow label="Net carrying cost" v={inr(res.net_carrying_cost)} accent={res.net_carrying_cost > 0 ? "bad" : "good"} />
               </div>
             </div>
@@ -248,6 +265,10 @@ function LoanOptimizer() {
     loan_tenure_years: 20,
     maintenance_monthly: 3500,
     property_tax_yearly: 12000,
+    under_construction: false,
+    possession_months: 36,
+    disbursement_schedule: "clp",
+    subvention_by_builder: false,
   });
   const [res, setRes] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -273,6 +294,47 @@ function LoanOptimizer() {
         </div>
         <NumberField label="Maint / month (₹)" value={form.maintenance_monthly} onChange={(v) => setForm({ ...form, maintenance_monthly: v })} />
         <NumberField label="Tax / year (₹)" value={form.property_tax_yearly} onChange={(v) => setForm({ ...form, property_tax_yearly: v })} />
+
+        <div className="pt-2 mt-2 border-t hairline space-y-2">
+          <label className="flex items-center gap-2 text-sm pt-2">
+            <input
+              type="checkbox"
+              checked={form.under_construction}
+              onChange={(e) => setForm({ ...form, under_construction: e.target.checked })}
+              className="accent-[hsl(var(--primary))]"
+              data-testid="optimizer-uc-toggle"
+            />
+            Under-construction property
+          </label>
+          {form.under_construction && (
+            <div className="space-y-2">
+              <NumberField label="Months till possession" value={form.possession_months} onChange={(v) => setForm({ ...form, possession_months: v })} />
+              <label className="block">
+                <span className="eyebrow block mb-1.5">Disbursement schedule</span>
+                <select
+                  className="input-dark w-full px-3 py-2"
+                  value={form.disbursement_schedule}
+                  onChange={(e) => setForm({ ...form, disbursement_schedule: e.target.value })}
+                  data-testid="optimizer-uc-schedule"
+                >
+                  <option value="clp">CLP (construction-linked)</option>
+                  <option value="linear">Linear ramp</option>
+                </select>
+              </label>
+              <label className="flex items-center gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  checked={form.subvention_by_builder}
+                  onChange={(e) => setForm({ ...form, subvention_by_builder: e.target.checked })}
+                  className="accent-[hsl(var(--primary))]"
+                  data-testid="optimizer-subvention"
+                />
+                Subvention scheme (builder pays pre-EMI)
+              </label>
+            </div>
+          )}
+        </div>
+
         <button onClick={run} disabled={loading} className="btn-primary w-full py-2.5 text-sm mt-3" data-testid="optimizer-run-button">
           {loading ? "Crunching…" : "Find sweet spot"}
         </button>
@@ -307,11 +369,18 @@ function LoanOptimizer() {
               )}
             </div>
             <div className="card-flat overflow-x-auto">
-              <div className="p-4 eyebrow border-b hairline">Down-payment sweep</div>
+              <div className="p-4 eyebrow border-b hairline flex items-center justify-between">
+                <span>Down-payment sweep</span>
+                {res.under_construction && (
+                  <span className="text-xs text-muted-foreground normal-case">
+                    UC · {res.possession_months} months · {res.disbursement_schedule}{res.subvention_by_builder ? " · subvention" : ""}
+                  </span>
+                )}
+              </div>
               <table className="w-full text-sm">
                 <thead className="text-left text-muted-foreground border-b hairline">
                   <tr>
-                    {["DP %", "DP", "Loan", "EMI", "Cashflow / mo", "CoC return"].map((h) => (
+                    {["DP %", "DP", "Loan", "EMI", "Cashflow / mo", "CoC return"].concat(res.under_construction ? ["Pre-EMI total"] : []).map((h) => (
                       <th key={h} className="p-3 font-normal eyebrow">{h}</th>
                     ))}
                   </tr>
@@ -336,6 +405,7 @@ function LoanOptimizer() {
                         {inr(g.monthly_cashflow)}
                       </td>
                       <td className="p-3 text-xs">{g.cash_on_cash_return_pct}%</td>
+                      {res.under_construction && <td className="p-3 text-xs">{inr(g.pre_emi_total)}</td>}
                     </tr>
                   ))}
                 </tbody>
@@ -699,6 +769,317 @@ function InvestCalc() {
                   </LineChart>
                 </ResponsiveContainer>
               </div>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ---------------------- Wealth Narrative — why buy long-term ---------------------- */
+function WealthNarrative() {
+  const [form, setForm] = useState({
+    property_price: 10000000,
+    down_payment_pct: 20,
+    loan_rate: 8.5,
+    loan_tenure_years: 20,
+    appreciation_pct: 7,
+    city_tier: "tier1",
+    monthly_rent_today: 30000,
+    rent_increase_pct: 8,
+    alt_return_pct: 12,
+    horizon_years: 25,
+    pass_to_generation: true,
+    legacy_bonus_pct: 15,
+  });
+  const [res, setRes] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const run = async () => {
+    setLoading(true);
+    try {
+      const { data } = await api.post("/calc/wealth-narrative", form);
+      setRes(data);
+    } catch (e) {
+      toast.error(formatApiErrorDetail(e.response?.data?.detail));
+    } finally {
+      setLoading(false);
+    }
+  };
+  return (
+    <div className="grid lg:grid-cols-[380px_1fr] gap-8">
+      <div className="card-flat p-6 space-y-2">
+        <NumberField label="Property price (₹)" value={form.property_price} onChange={(v) => setForm({ ...form, property_price: v })} />
+        <div className="grid grid-cols-2 gap-3">
+          <NumberField label="DP %" value={form.down_payment_pct} onChange={(v) => setForm({ ...form, down_payment_pct: v })} />
+          <NumberField label="Loan %" value={form.loan_rate} step="0.1" onChange={(v) => setForm({ ...form, loan_rate: v })} />
+        </div>
+        <div className="grid grid-cols-2 gap-3">
+          <NumberField label="Tenure" value={form.loan_tenure_years} onChange={(v) => setForm({ ...form, loan_tenure_years: v })} />
+          <NumberField label="Appreciation %" value={form.appreciation_pct} step="0.1" onChange={(v) => setForm({ ...form, appreciation_pct: v })} />
+        </div>
+        <label className="block">
+          <span className="eyebrow block mb-1.5">City tier</span>
+          <select
+            className="input-dark w-full px-3 py-2"
+            value={form.city_tier}
+            onChange={(e) => setForm({ ...form, city_tier: e.target.value })}
+            data-testid="wealth-tier"
+          >
+            <option value="tier1">Tier 1 (BLR/MUM/NCR/HYD/PUN/CHN) — +15%</option>
+            <option value="tier2">Tier 2</option>
+            <option value="tier3">Tier 3 — -15%</option>
+          </select>
+        </label>
+        <NumberField label="Monthly rent today (₹)" value={form.monthly_rent_today} onChange={(v) => setForm({ ...form, monthly_rent_today: v })} />
+        <div className="grid grid-cols-2 gap-3">
+          <NumberField label="Rent ↑ %" value={form.rent_increase_pct} step="0.1" onChange={(v) => setForm({ ...form, rent_increase_pct: v })} />
+          <NumberField label="Alt return %" value={form.alt_return_pct} step="0.1" onChange={(v) => setForm({ ...form, alt_return_pct: v })} />
+        </div>
+        <NumberField label="Horizon (years)" value={form.horizon_years} onChange={(v) => setForm({ ...form, horizon_years: v })} />
+        <label className="flex items-center gap-2 text-sm pt-2">
+          <input
+            type="checkbox"
+            checked={form.pass_to_generation}
+            onChange={(e) => setForm({ ...form, pass_to_generation: e.target.checked })}
+            className="accent-[hsl(var(--primary))]"
+            data-testid="wealth-gen"
+          />
+          Pass to next generation (+legacy bonus)
+        </label>
+        <button onClick={run} disabled={loading} className="btn-primary w-full py-2.5 text-sm mt-3" data-testid="wealth-run-button">
+          {loading ? "Running…" : "Show the case for buying"}
+        </button>
+      </div>
+      <div>
+        {!res ? (
+          <div className="card-flat p-8 text-muted-foreground">
+            Owning property is a <span className="text-foreground">long-game</span>. Watch what happens to your net worth vs renting-and-investing across a 20-30 year horizon — including tier-1 appreciation, EMI ending after tenure, ever-rising rent, and the tax-free generational transfer that only real estate gets in India.
+          </div>
+        ) : (
+          <div className="space-y-6" data-testid="wealth-result">
+            <div className={`card-flat p-8 ${res.winner === "Buy" ? "border-[hsl(var(--secondary))]" : "border-destructive"}`}>
+              <div className="eyebrow mb-2">Winner over {form.horizon_years} years</div>
+              <div className="font-serif text-5xl">{res.winner === "Buy" ? "Buy wins." : "Renting wins."}</div>
+              <div className="text-sm text-muted-foreground mt-3">Delta: {inrFull(res.delta)} {res.crossover_year ? `· crossover year ${res.crossover_year}` : ""}</div>
+            </div>
+            <div className="grid md:grid-cols-3 gap-4">
+              <Metric label="Buy final wealth" value={inrFull(res.final_buy_wealth)} />
+              <Metric label="Rent-invest final" value={inrFull(res.final_rent_wealth)} />
+              <Metric label="Tier premium applied" value={`+${res.tier_premium_applied_pct}%`} />
+            </div>
+            <div className="card-flat p-6">
+              <div className="eyebrow mb-4">Net worth trajectory</div>
+              <div style={{ width: "100%", height: 340 }}>
+                <ResponsiveContainer>
+                  <LineChart data={res.series}>
+                    <CartesianGrid stroke="hsl(var(--border))" strokeDasharray="2 4" />
+                    <XAxis dataKey="year" stroke="hsl(var(--muted-foreground))" />
+                    <YAxis stroke="hsl(var(--muted-foreground))" tickFormatter={(v) => inr(v)} />
+                    <Tooltip formatter={(v) => inrFull(v)} />
+                    <Legend />
+                    <Line type="monotone" name="Buy (net worth)" dataKey="buy_net_worth" stroke="#C85A32" strokeWidth={2.5} dot={false} />
+                    <Line type="monotone" name="Rent (invested)" dataKey="rent_net_worth" stroke="#4A5568" strokeWidth={2.5} dot={false} />
+                    <Line type="monotone" name="Property value" dataKey="property_value" stroke="#B89B72" strokeWidth={1.5} strokeDasharray="3 3" dot={false} />
+                  </LineChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+            <div className="card-flat p-6">
+              <div className="eyebrow mb-3">Why the math favours buying</div>
+              <ul className="space-y-3 text-sm leading-relaxed">
+                {res.narratives.map((n, i) => (
+                  <li key={i} className="flex gap-3" data-testid={`wealth-narrative-${i}`}>
+                    <span className="text-[hsl(var(--secondary))]">▪</span>
+                    <span className="text-muted-foreground">{n}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ---------------------- Rent-for-cashflow (owned property) ---------------------- */
+function RentForCashflow() {
+  const [form, setForm] = useState({
+    current_value: 8000000,
+    outstanding_loan: 4500000,
+    current_emi: 39200,
+    current_rent: 25000,
+    rent_increase_pct: 8,
+    maintenance_monthly: 3000,
+    property_tax_yearly: 12000,
+    target_years_to_positive: 3,
+  });
+  const [res, setRes] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const run = async () => {
+    setLoading(true);
+    try {
+      const { data } = await api.post("/calc/rent-for-cashflow", form);
+      setRes(data);
+    } catch (e) {
+      toast.error(formatApiErrorDetail(e.response?.data?.detail));
+    } finally {
+      setLoading(false);
+    }
+  };
+  return (
+    <div className="grid lg:grid-cols-[380px_1fr] gap-8">
+      <div className="card-flat p-6 space-y-2">
+        <NumberField label="Current property value (₹)" value={form.current_value} onChange={(v) => setForm({ ...form, current_value: v })} />
+        <NumberField label="Outstanding loan (₹)" value={form.outstanding_loan} onChange={(v) => setForm({ ...form, outstanding_loan: v })} />
+        <NumberField label="Current EMI (₹)" value={form.current_emi} onChange={(v) => setForm({ ...form, current_emi: v })} />
+        <NumberField label="Current rent (₹/mo, 0 if vacant)" value={form.current_rent} onChange={(v) => setForm({ ...form, current_rent: v })} />
+        <div className="grid grid-cols-2 gap-3">
+          <NumberField label="Maint / month" value={form.maintenance_monthly} onChange={(v) => setForm({ ...form, maintenance_monthly: v })} />
+          <NumberField label="Tax / year" value={form.property_tax_yearly} onChange={(v) => setForm({ ...form, property_tax_yearly: v })} />
+        </div>
+        <div className="grid grid-cols-2 gap-3">
+          <NumberField label="Rent ↑ % p.a." value={form.rent_increase_pct} step="0.1" onChange={(v) => setForm({ ...form, rent_increase_pct: v })} />
+          <NumberField label="Target years" value={form.target_years_to_positive} onChange={(v) => setForm({ ...form, target_years_to_positive: v })} />
+        </div>
+        <button onClick={run} disabled={loading} className="btn-primary w-full py-2.5 text-sm mt-3" data-testid="rentcf-run-button">
+          {loading ? "Crunching…" : "Find the rent"}
+        </button>
+      </div>
+      <div>
+        {!res ? (
+          <div className="card-flat p-8 text-muted-foreground">
+            Got an owned rental that&apos;s bleeding money? This tells you the rent you need to charge <span className="text-foreground">today</span> (or in N years, given rent inflation) to make your EMI + costs self-sustaining.
+          </div>
+        ) : (
+          <div className="space-y-6" data-testid="rentcf-result">
+            <div className="grid md:grid-cols-3 gap-4">
+              <Metric label="Rent required today" value={inrFull(res.required_rent_today)} />
+              <Metric label={`Rent needed by year ${res.target_years}`} value={inrFull(res.required_rent_at_target_year)} />
+              <Metric label="Monthly gap" value={res.gap_monthly > 0 ? `+${inr(res.gap_monthly)}` : "None"} />
+            </div>
+            <div className="card-flat p-6">
+              <div className="eyebrow mb-2">Verdict</div>
+              <div className="font-serif text-2xl" data-testid="rentcf-verdict">{res.verdict}</div>
+              <div className="text-xs text-muted-foreground mt-2">
+                Today&apos;s gross yield: {res.gross_yield_today_pct}% · required yield: {res.required_gross_yield_pct}%
+              </div>
+            </div>
+            <div className="card-flat p-6">
+              <div className="eyebrow mb-4">Cashflow trajectory at current rent + market increase</div>
+              <div style={{ width: "100%", height: 280 }}>
+                <ResponsiveContainer>
+                  <LineChart data={res.trajectory}>
+                    <CartesianGrid stroke="hsl(var(--border))" strokeDasharray="2 4" />
+                    <XAxis dataKey="year" stroke="hsl(var(--muted-foreground))" />
+                    <YAxis stroke="hsl(var(--muted-foreground))" tickFormatter={(v) => inr(v)} />
+                    <Tooltip formatter={(v) => inrFull(v)} />
+                    <Legend />
+                    <Line type="monotone" name="Monthly cashflow" dataKey="monthly_cashflow" stroke="#C85A32" strokeWidth={2.5} dot={false} />
+                    <Line type="monotone" name="Rent" dataKey="rent" stroke="#B89B72" strokeWidth={1.5} dot={false} />
+                  </LineChart>
+                </ResponsiveContainer>
+              </div>
+              {res.year_cashflow_turns_positive && (
+                <div className="text-sm text-[hsl(var(--secondary))] mt-3">
+                  ✓ Turns cashflow-positive in year {res.year_cashflow_turns_positive}.
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ---------------------- Prepayment vs Invest ---------------------- */
+function PrepaymentAnalysis() {
+  const [form, setForm] = useState({
+    outstanding_loan: 4500000,
+    loan_rate: 8.5,
+    remaining_tenure_years: 15,
+    current_emi: 39200,
+    surplus_amount: 1000000,
+    alt_invest_return_pct: 12,
+    rental_income_monthly: 28000,
+    maintenance_monthly: 3000,
+    property_tax_yearly: 12000,
+  });
+  const [res, setRes] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const run = async () => {
+    setLoading(true);
+    try {
+      const { data } = await api.post("/calc/prepayment-analysis", form);
+      setRes(data);
+    } catch (e) {
+      toast.error(formatApiErrorDetail(e.response?.data?.detail));
+    } finally {
+      setLoading(false);
+    }
+  };
+  return (
+    <div className="grid lg:grid-cols-[380px_1fr] gap-8">
+      <div className="card-flat p-6 space-y-2">
+        <NumberField label="Outstanding loan (₹)" value={form.outstanding_loan} onChange={(v) => setForm({ ...form, outstanding_loan: v })} />
+        <div className="grid grid-cols-2 gap-3">
+          <NumberField label="Loan %" value={form.loan_rate} step="0.1" onChange={(v) => setForm({ ...form, loan_rate: v })} />
+          <NumberField label="Tenure left" value={form.remaining_tenure_years} step="0.5" onChange={(v) => setForm({ ...form, remaining_tenure_years: v })} />
+        </div>
+        <NumberField label="Current EMI (₹)" value={form.current_emi} onChange={(v) => setForm({ ...form, current_emi: v })} />
+        <NumberField label="Surplus / lumpsum (₹)" value={form.surplus_amount} onChange={(v) => setForm({ ...form, surplus_amount: v })} />
+        <NumberField label="Alt invest return %" value={form.alt_invest_return_pct} step="0.1" onChange={(v) => setForm({ ...form, alt_invest_return_pct: v })} />
+        <div className="pt-2 border-t hairline">
+          <div className="eyebrow mb-2 pt-2">Owned rental (optional)</div>
+          <NumberField label="Rental income ₹/mo" value={form.rental_income_monthly} onChange={(v) => setForm({ ...form, rental_income_monthly: v })} />
+          <div className="grid grid-cols-2 gap-3">
+            <NumberField label="Maint / month" value={form.maintenance_monthly} onChange={(v) => setForm({ ...form, maintenance_monthly: v })} />
+            <NumberField label="Tax / year" value={form.property_tax_yearly} onChange={(v) => setForm({ ...form, property_tax_yearly: v })} />
+          </div>
+        </div>
+        <button onClick={run} disabled={loading} className="btn-primary w-full py-2.5 text-sm mt-3" data-testid="prepay-run-button">
+          {loading ? "Crunching…" : "Run analysis"}
+        </button>
+      </div>
+      <div>
+        {!res ? (
+          <div className="card-flat p-8 text-muted-foreground">
+            Got a lumpsum and a loan? Should you prepay, fully close, or invest it in MF at 12%? Estima runs all four playbooks — including the hybrid of part-prepay + invest monthly EMI savings — and surfaces the winner for your math.
+          </div>
+        ) : (
+          <div className="space-y-6" data-testid="prepay-result">
+            <div className="card-flat p-8 border-[hsl(var(--secondary))]">
+              <div className="eyebrow text-[hsl(var(--secondary))] mb-2">Recommended</div>
+              <div className="font-serif text-4xl">{res.winner_name}</div>
+              <div className="text-sm text-muted-foreground mt-2">
+                Current monthly cashflow on this property: <span className={res.current_monthly_cashflow >= 0 ? "text-[hsl(var(--secondary))]" : "text-destructive"}>{inr(res.current_monthly_cashflow)}</span>
+              </div>
+            </div>
+            <div className="grid md:grid-cols-2 gap-4">
+              {res.scenarios.map((s) => (
+                <div
+                  key={s.id}
+                  className={`card-flat p-6 ${s.id === res.winner ? "border-[hsl(var(--secondary))]" : ""}`}
+                  data-testid={`prepay-scenario-${s.id}`}
+                >
+                  <div className="font-serif text-2xl mb-1">{s.name}</div>
+                  <div className="text-xs text-muted-foreground mb-4">{s.best_for}</div>
+                  <div className="space-y-1 text-sm">
+                    {s.new_emi !== undefined && <Row label="New EMI" v={inr(s.new_emi)} />}
+                    {s.principal_after !== undefined && <Row label="Principal after" v={inr(s.principal_after)} />}
+                    {s.interest_saved !== undefined && <Row label="Interest saved" v={inr(s.interest_saved)} accent="good" />}
+                    {s.final_alt_value !== undefined && <Row label="Alt final value" v={inr(s.final_alt_value)} accent="good" />}
+                    {s.leftover_cash_invested_final !== undefined && s.leftover_cash_invested_final > 0 && <Row label="Leftover invested" v={inr(s.leftover_cash_invested_final)} accent="good" />}
+                    {s.final_fv_of_emi_savings !== undefined && <Row label="FV of EMI savings" v={inr(s.final_fv_of_emi_savings)} accent="good" />}
+                    {s.total_benefit !== undefined && <Row label="Total benefit" v={inr(s.total_benefit)} accent="good" />}
+                    {s.monthly_cashflow_delta !== undefined && <Row label="Cashflow delta" v={(s.monthly_cashflow_delta >= 0 ? "+" : "") + inr(s.monthly_cashflow_delta)} accent={s.monthly_cashflow_delta > 0 ? "good" : undefined} />}
+                    {s.effective_roi_pct !== undefined && <Row label="Effective ROI" v={`${s.effective_roi_pct}%`} />}
+                    {s.feasible === false && <Row label="Feasible" v="No — surplus < loan" accent="bad" />}
+                  </div>
+                </div>
+              ))}
             </div>
           </div>
         )}

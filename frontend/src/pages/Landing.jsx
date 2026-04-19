@@ -216,52 +216,38 @@ export default function Landing() {
               {
                 title: "Compare 3 flats in under a minute",
                 length: "0:52",
-                youtube: "dQw4w9WgXcQ",
                 body: "From empty ledger to a weighted winner — watch the side-by-side score reveal itself.",
               },
               {
                 title: "Rent vs buy, with real math",
                 length: "1:14",
-                youtube: "dQw4w9WgXcQ",
                 body: "Breakeven year, net worth trajectories, and why this number often surprises you.",
               },
               {
                 title: "Property vs mutual funds vs equity",
                 length: "1:02",
-                youtube: "dQw4w9WgXcQ",
                 body: "Run your property against Nifty, gold, and MF CAGRs. See who wins at 10 years.",
               },
               {
                 title: "The AI advisor takes your call",
                 length: "0:48",
-                youtube: "dQw4w9WgXcQ",
                 body: "Claude Sonnet 4.5 reading your numbers and returning a verdict in plain language.",
               },
             ].map((v, i) => (
-              <a
+              <div
                 key={i}
-                href={`https://www.youtube.com/watch?v=${v.youtube}`}
-                target="_blank"
-                rel="noopener noreferrer"
                 data-testid={`demo-video-${i}`}
-                className="card-flat overflow-hidden group hover:border-[hsl(var(--secondary))] transition"
+                className="card-flat overflow-hidden group"
               >
-                <div className="aspect-video relative bg-[hsl(var(--muted))] overflow-hidden">
-                  <img
-                    src={`https://img.youtube.com/vi/${v.youtube}/maxresdefault.jpg`}
-                    onError={(e) => {
-                      e.currentTarget.style.display = "none";
-                    }}
-                    alt={v.title}
-                    className="w-full h-full object-cover opacity-70 group-hover:opacity-100 transition"
-                  />
-                  <div className="absolute inset-0 bg-gradient-to-t from-background to-transparent" />
-                  <div className="absolute inset-0 flex items-center justify-center">
-                    <div className="h-16 w-16 rounded-full bg-[hsl(var(--primary))] flex items-center justify-center text-white">
+                <div className="aspect-video relative bg-[hsl(var(--muted))] overflow-hidden flex items-center justify-center">
+                  <div className="absolute inset-0 bg-gradient-to-br from-[hsl(var(--primary))]/10 via-transparent to-[hsl(var(--secondary))]/10" />
+                  <div className="relative text-center">
+                    <div className="h-16 w-16 rounded-full bg-[hsl(var(--primary))]/20 border border-[hsl(var(--primary))] flex items-center justify-center text-[hsl(var(--primary))] mx-auto mb-3">
                       <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor">
                         <path d="M8 5v14l11-7z" />
                       </svg>
                     </div>
+                    <div className="text-xs text-muted-foreground tracking-widest uppercase">Coming soon</div>
                   </div>
                   <div className="absolute bottom-3 right-3 bg-background/80 px-2 py-0.5 text-[11px] font-mono">
                     {v.length}
@@ -271,8 +257,39 @@ export default function Landing() {
                   <div className="font-serif text-xl mb-2">{v.title}</div>
                   <div className="text-sm text-muted-foreground">{v.body}</div>
                 </div>
-              </a>
+              </div>
             ))}
+          </div>
+        </div>
+      </section>
+
+      {/* Why buy teaser */}
+      <section className="border-t hairline bg-[hsl(var(--muted))]/40">
+        <div className="max-w-6xl mx-auto px-6 py-24">
+          <div className="grid md:grid-cols-[1fr_1.3fr] gap-12 items-center">
+            <div>
+              <div className="eyebrow mb-4 text-[hsl(var(--secondary))]">Long-game math</div>
+              <h2 className="font-serif text-4xl md:text-5xl leading-tight">Why buying still wins over 25 years.</h2>
+              <p className="text-muted-foreground mt-5 leading-relaxed">
+                Tier-1 land is finite. Rents compound at 8% a year. EMIs end at tenure — and every rupee after that becomes investable. And when you pass property on, India&apos;s capital-gains clock resets at zero. Run your own numbers in the Wealth narrative calculator.
+              </p>
+              <Link to="/register" className="btn-primary px-6 py-3 text-sm inline-flex items-center gap-2 mt-8" data-testid="wealth-landing-cta">
+                Run the 25-year math <ArrowRight size={14} weight="bold" />
+              </Link>
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              {[
+                { h: "Tier-1 land is finite", p: "Bengaluru, Mumbai, Delhi NCR, Hyderabad, Pune — a fixed-supply game with a growing buyer pool." },
+                { h: "Rent compounds 8% a year", p: "₹30k today ≈ ₹2L in 25 years. That money never comes back." },
+                { h: "EMI has an expiry date", p: "After year 20 every rupee that used to go to the bank compounds into your net worth." },
+                { h: "Generational tax-free transfer", p: "Inheritance resets India's capital-gains clock to zero. Equity and MFs don't." },
+              ].map((c, i) => (
+                <div key={i} className="card-flat p-5" data-testid={`why-buy-${i}`}>
+                  <div className="font-serif text-xl mb-2">{c.h}</div>
+                  <p className="text-sm text-muted-foreground leading-relaxed">{c.p}</p>
+                </div>
+              ))}
+            </div>
           </div>
         </div>
       </section>
