@@ -103,8 +103,17 @@ def create_refresh_token(user_id: str) -> str:
 
 
 def set_auth_cookies(response: Response, access: str, refresh: str):
-    response.set_cookie("access_token", access, httponly=True, secure=False, samesite="lax", max_age=60 * 60 * 24, path="/")
-    response.set_cookie("refresh_token", refresh, httponly=True, secure=False, samesite="lax", max_age=60 * 60 * 24 * 7, path="/")
+    # secure=True + samesite="none" is REQUIRED for cross-site OAuth flows on HTTPS
+    # (Emergent Google Auth bounces between auth.emergentagent.com ↔ user's origin).
+    # Modern browsers drop `SameSite=Lax` cookies on cross-origin XHR and drop
+    # `secure=false` cookies entirely on HTTPS pages.
+    response.set_cookie("access_token", access, httponly=True, secure=True, samesite="none", max_age=60 * 60 * 24, path="/")
+    response.set_cookie("refresh_token", refresh, httponly=True, secure=True, samesite="none", max_age=60 * 60 * 24 * 7, path="/")
+
+
+def clear_auth_cookies(response: Response):
+    response.delete_cookie("access_token", path="/", samesite="none", secure=True)
+    response.delete_cookie("refresh_token", path="/", samesite="none", secure=True)
 
 
 async def get_current_user(request: Request) -> dict:
@@ -349,8 +358,7 @@ async def login(body: LoginIn, response: Response, request: Request):
 
 @api_router.post("/auth/logout")
 async def logout(response: Response):
-    response.delete_cookie("access_token", path="/")
-    response.delete_cookie("refresh_token", path="/")
+    clear_auth_cookies(response)
     return {"ok": True}
 
 
