@@ -131,8 +131,8 @@ export default function Pricing() {
                       : "per year · billed once"}
                 </div>
                 <ul className="space-y-3 mb-8 flex-1">
-                  {p.features.map((f, i) => (
-                    <li key={i} className="flex items-start gap-2.5 text-sm">
+                  {p.features.map((f) => (
+                    <li key={f} className="flex items-start gap-2.5 text-sm">
                       <Check size={16} weight="bold" className="text-[hsl(var(--secondary))] mt-0.5 shrink-0" />
                       <span>{f}</span>
                     </li>

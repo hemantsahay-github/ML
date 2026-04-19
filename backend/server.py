@@ -215,25 +215,73 @@ def _user_out(user: dict) -> UserOut:
 # ------------------------------------------------------------
 # Auth Endpoints
 # ------------------------------------------------------------
+async def _unique_referral_code() -> str:
+    code = secrets.token_urlsafe(6).replace("_", "").replace("-", "")[:8].upper()
+    while await db.users.find_one({"referral_code": code}):
+        code = secrets.token_urlsafe(6).upper()[:8]
+    return code
+
+
+async def _resolve_referrer_id(referral_code: Optional[str]) -> Optional[str]:
+    if not referral_code:
+        return None
+    ref_user = await db.users.find_one({"referral_code": referral_code.upper().strip()})
+    return str(ref_user["_id"]) if ref_user else None
+
+
+async def _grant_referrer_reward(referred_by: str, referred_uid: str, referred_email: str, now: datetime) -> None:
+    """Extend referrer by +30 days and fire referral email. Best-effort (no re-raise)."""
+    try:
+        ref_user_doc = await db.users.find_one({"_id": ObjectId(referred_by)})
+        if not ref_user_doc:
+            return
+        state = _compute_plan_state(ref_user_doc)
+        base = now
+        if state.get("is_pro") and state.get("plan_expires_at"):
+            try:
+                ex = datetime.fromisoformat(state["plan_expires_at"].replace("Z", "+00:00"))
+                if ex > now:
+                    base = ex
+            except Exception:
+                pass
+        new_expires = base + timedelta(days=30)
+        await db.users.update_one(
+            {"_id": ObjectId(referred_by)},
+            {"$set": {"plan": "pro", "plan_status": "active", "plan_expires_at": new_expires.isoformat()},
+             "$inc": {"referral_count": 1}},
+        )
+        await db.referral_events.insert_one({
+            "referrer_id": referred_by,
+            "referred_user_id": referred_uid,
+            "referred_email": referred_email,
+            "days_granted": 30,
+            "created_at": now.isoformat(),
+        })
+        try:
+            subj, html = notify.tpl_referral_reward(ref_user_doc.get("name", "there"), referred_email, 30)
+            notify.send_email(ref_user_doc["email"], subj, html)
+        except Exception:
+            logger.exception("referral email failed")
+    except Exception:
+        logger.exception("referral grant failed")
+
+
+def _send_welcome_email_safe(email: str, name: str) -> None:
+    try:
+        subj, html = notify.tpl_welcome(name, TRIAL_DAYS)
+        notify.send_email(email, subj, html)
+    except Exception:
+        logger.exception("welcome email failed")
+
+
 @api_router.post("/auth/register", response_model=UserOut)
 async def register(body: RegisterIn, response: Response):
     email = body.email.lower().strip()
-    existing = await db.users.find_one({"email": email})
-    if existing:
+    if await db.users.find_one({"email": email}):
         raise HTTPException(status_code=400, detail="Email already registered")
     now = datetime.now(timezone.utc)
-    trial_end = now + timedelta(days=TRIAL_DAYS)
-
-    referral_code = secrets.token_urlsafe(6).replace("_", "").replace("-", "")[:8].upper()
-    # ensure uniqueness (rare collision)
-    while await db.users.find_one({"referral_code": referral_code}):
-        referral_code = secrets.token_urlsafe(6).upper()[:8]
-
-    referred_by = None
-    if body.referral_code:
-        ref_user = await db.users.find_one({"referral_code": body.referral_code.upper().strip()})
-        if ref_user:
-            referred_by = str(ref_user["_id"])
+    referral_code = await _unique_referral_code()
+    referred_by = await _resolve_referrer_id(body.referral_code)
 
     doc = {
         "email": email,
@@ -242,7 +290,7 @@ async def register(body: RegisterIn, response: Response):
         "role": "user",
         "plan": "pro",
         "plan_status": "trial",
-        "trial_ends_at": trial_end.isoformat(),
+        "trial_ends_at": (now + timedelta(days=TRIAL_DAYS)).isoformat(),
         "plan_expires_at": None,
         "referral_code": referral_code,
         "referred_by": referred_by,
@@ -252,58 +300,14 @@ async def register(body: RegisterIn, response: Response):
     result = await db.users.insert_one(doc)
     uid = str(result.inserted_id)
 
-    # Grant referrer +30 Pro days immediately upon successful signup
     if referred_by:
-        try:
-            ref_user_doc = await db.users.find_one({"_id": ObjectId(referred_by)})
-            if ref_user_doc:
-                state = _compute_plan_state(ref_user_doc)
-                base = now
-                if state.get("is_pro") and state.get("plan_expires_at"):
-                    try:
-                        ex = datetime.fromisoformat(state["plan_expires_at"].replace("Z", "+00:00"))
-                        if ex > now:
-                            base = ex
-                    except Exception:
-                        pass
-                new_expires = base + timedelta(days=30)
-                await db.users.update_one(
-                    {"_id": ObjectId(referred_by)},
-                    {"$set": {
-                        "plan": "pro",
-                        "plan_status": "active",
-                        "plan_expires_at": new_expires.isoformat(),
-                    },
-                     "$inc": {"referral_count": 1}},
-                )
-                await db.referral_events.insert_one({
-                    "referrer_id": referred_by,
-                    "referred_user_id": uid,
-                    "referred_email": email,
-                    "days_granted": 30,
-                    "created_at": now.isoformat(),
-                })
-                # Fire referral email
-                try:
-                    subj, html = notify.tpl_referral_reward(ref_user_doc.get("name", "there"), email, 30)
-                    notify.send_email(ref_user_doc["email"], subj, html)
-                except Exception:
-                    logger.exception("referral email failed")
-        except Exception:
-            logger.exception("referral grant failed")
+        await _grant_referrer_reward(referred_by, uid, email, now)
 
     access = create_access_token(uid, email)
     refresh = create_refresh_token(uid)
     set_auth_cookies(response, access, refresh)
     doc["id"] = uid
-
-    # Fire welcome email (no-op if RESEND_API_KEY missing)
-    try:
-        subj, html = notify.tpl_welcome(doc["name"], TRIAL_DAYS)
-        notify.send_email(email, subj, html)
-    except Exception:
-        logger.exception("welcome email failed")
-
+    _send_welcome_email_safe(email, doc["name"])
     return _user_out(doc)
 
 
@@ -430,6 +434,66 @@ async def list_properties(status: Optional[str] = None, user: dict = Depends(get
     return docs
 
 
+def _owned_item_row(p: dict) -> dict:
+    """Compute per-property owned item row: equity, cashflow, EMI, etc."""
+    purchase_price = p.get("purchase_price") or p.get("price") or 0
+    current_value = p.get("current_value") or purchase_price
+    loan_balance = p.get("current_loan_balance")
+    if loan_balance is None:
+        loan_balance = max((p.get("price", 0) - p.get("down_payment", 0)), 0)
+    emi = _emi(max(p.get("price", 0) - p.get("down_payment", 0), 0),
+               p.get("loan_rate", 8.5), p.get("loan_tenure_years", 20))
+    rent = p.get("monthly_rent_income", 0) if p.get("rented") else 0
+    maint = p.get("maintenance_monthly", 0)
+    equity = current_value - loan_balance
+    appreciation_pct = ((current_value - purchase_price) / purchase_price * 100) if purchase_price else 0
+    monthly_cashflow = rent - emi - maint
+    return {
+        "id": p["id"],
+        "name": p["name"],
+        "type": p["type"],
+        "location": p.get("location", ""),
+        "status": "owned",
+        "purchase_date": p.get("purchase_date"),
+        "purchase_price": round(purchase_price, 2),
+        "current_value": round(current_value, 2),
+        "loan_balance": round(loan_balance, 2),
+        "equity": round(equity, 2),
+        "appreciation_pct": round(appreciation_pct, 2),
+        "emi": round(emi, 2),
+        "monthly_rent": round(rent, 2),
+        "monthly_cashflow": round(monthly_cashflow, 2),
+        "rented": bool(p.get("rented")),
+        # raw values for aggregation
+        "_raw_purchase": purchase_price,
+        "_raw_current": current_value,
+        "_raw_loan": loan_balance,
+        "_raw_rent": rent,
+        "_raw_emi": emi,
+        "_raw_maint": maint,
+    }
+
+
+def _sold_item_row(p: dict) -> dict:
+    purchase_price = p.get("purchase_price") or p.get("price") or 0
+    sold_price = p.get("sold_price") or purchase_price
+    gain = sold_price - purchase_price
+    gain_pct = (gain / purchase_price * 100) if purchase_price else 0
+    return {
+        "id": p["id"],
+        "name": p["name"],
+        "type": p["type"],
+        "location": p.get("location", ""),
+        "status": "sold",
+        "purchase_date": p.get("purchase_date"),
+        "sold_date": p.get("sold_date"),
+        "purchase_price": round(purchase_price, 2),
+        "sold_price": round(sold_price, 2),
+        "gain": round(gain, 2),
+        "gain_pct": round(gain_pct, 2),
+    }
+
+
 @api_router.get("/portfolio/summary")
 async def portfolio_summary(user: dict = Depends(get_current_user)):
     owned = await db.properties.find(
@@ -439,78 +503,22 @@ async def portfolio_summary(user: dict = Depends(get_current_user)):
         {"user_id": user["id"], "status": "sold"}, {"_id": 0}
     ).to_list(500)
 
-    total_current_value = 0.0
-    total_purchase_cost = 0.0
-    total_loan_balance = 0.0
-    total_monthly_rent = 0.0
-    total_monthly_emi = 0.0
-    total_monthly_maintenance = 0.0
-    items = []
+    items = [_owned_item_row(p) for p in owned]
+    sold_items = [_sold_item_row(p) for p in sold]
 
-    for p in owned:
-        purchase_price = p.get("purchase_price") or p.get("price") or 0
-        current_value = p.get("current_value") or purchase_price
-        loan_balance = p.get("current_loan_balance")
-        if loan_balance is None:
-            loan_balance = max((p.get("price", 0) - p.get("down_payment", 0)), 0)
-        emi = _emi(max(p.get("price", 0) - p.get("down_payment", 0), 0),
-                   p.get("loan_rate", 8.5), p.get("loan_tenure_years", 20))
-        rent = p.get("monthly_rent_income", 0) if p.get("rented") else 0
-        maint = p.get("maintenance_monthly", 0)
+    total_current_value = sum(it["_raw_current"] for it in items)
+    total_purchase_cost = sum(it["_raw_purchase"] for it in items)
+    total_loan_balance = sum(it["_raw_loan"] for it in items)
+    total_monthly_rent = sum(it["_raw_rent"] for it in items)
+    total_monthly_emi = sum(it["_raw_emi"] for it in items)
+    total_monthly_maintenance = sum(it["_raw_maint"] for it in items)
+    # strip internal keys
+    for it in items:
+        for k in ("_raw_purchase", "_raw_current", "_raw_loan", "_raw_rent", "_raw_emi", "_raw_maint"):
+            it.pop(k, None)
 
-        equity = current_value - loan_balance
-        appreciation_pct = ((current_value - purchase_price) / purchase_price * 100) if purchase_price else 0
-        monthly_cashflow = rent - emi - maint
-
-        total_current_value += current_value
-        total_purchase_cost += purchase_price
-        total_loan_balance += loan_balance
-        total_monthly_rent += rent
-        total_monthly_emi += emi
-        total_monthly_maintenance += maint
-
-        items.append({
-            "id": p["id"],
-            "name": p["name"],
-            "type": p["type"],
-            "location": p.get("location", ""),
-            "status": "owned",
-            "purchase_date": p.get("purchase_date"),
-            "purchase_price": round(purchase_price, 2),
-            "current_value": round(current_value, 2),
-            "loan_balance": round(loan_balance, 2),
-            "equity": round(equity, 2),
-            "appreciation_pct": round(appreciation_pct, 2),
-            "emi": round(emi, 2),
-            "monthly_rent": round(rent, 2),
-            "monthly_cashflow": round(monthly_cashflow, 2),
-            "rented": bool(p.get("rented")),
-        })
-
-    # Sold properties — realized gains summary
-    total_realized_gains = 0.0
-    total_sold_proceeds = 0.0
-    sold_items = []
-    for p in sold:
-        purchase_price = p.get("purchase_price") or p.get("price") or 0
-        sold_price = p.get("sold_price") or purchase_price
-        gain = sold_price - purchase_price
-        gain_pct = (gain / purchase_price * 100) if purchase_price else 0
-        total_realized_gains += gain
-        total_sold_proceeds += sold_price
-        sold_items.append({
-            "id": p["id"],
-            "name": p["name"],
-            "type": p["type"],
-            "location": p.get("location", ""),
-            "status": "sold",
-            "purchase_date": p.get("purchase_date"),
-            "sold_date": p.get("sold_date"),
-            "purchase_price": round(purchase_price, 2),
-            "sold_price": round(sold_price, 2),
-            "gain": round(gain, 2),
-            "gain_pct": round(gain_pct, 2),
-        })
+    total_realized_gains = sum(s["gain"] for s in sold_items)
+    total_sold_proceeds = sum(s["sold_price"] for s in sold_items)
 
     total_equity = total_current_value - total_loan_balance
     total_appreciation_pct = (
@@ -576,56 +584,66 @@ async def portfolio_timeline(user: dict = Depends(get_current_user)):
     current_year = datetime.now(timezone.utc).year
     earliest_year = min(_yr(p["purchase_date"]) for p in dated)
 
-    series = []
-    for year in range(earliest_year, current_year + 1):
-        total_value = 0.0
-        total_loan = 0.0
-        cumulative_realized = 0.0
-
-        for p in dated:
-            pyear = _yr(p["purchase_date"])
-            if year < pyear:
-                continue
-            purchase_price = p.get("purchase_price") or p.get("price", 0) or 0
-            loan_amount = max((p.get("price", 0) or 0) - (p.get("down_payment", 0) or 0), 0)
-            rate = p.get("loan_rate", 8.5) or 8.5
-            tenure = p.get("loan_tenure_years", 20) or 20
-
-            if p.get("status") == "sold" and p.get("sold_date"):
-                syear = _yr(p["sold_date"])
-                sold_price = p.get("sold_price") or purchase_price
-                if year < syear:
-                    # still held that year — interpolate between purchase and sold
-                    span = max(syear - pyear, 1)
-                    ratio = (year - pyear) / span
-                    val = purchase_price + (sold_price - purchase_price) * ratio
-                    total_value += val
-                    months = (year - pyear) * 12
-                    total_loan += _loan_balance_after_months(loan_amount, rate, tenure, months)
-                else:
-                    cumulative_realized += (sold_price - purchase_price)
-                continue
-
-            # owned
-            current_value = p.get("current_value") or purchase_price
-            span = max(current_year - pyear, 1)
-            ratio = min((year - pyear) / span, 1.0)
-            val = purchase_price + (current_value - purchase_price) * ratio
-            total_value += val
-            months = (year - pyear) * 12
-            total_loan += _loan_balance_after_months(loan_amount, rate, tenure, months)
-
-        equity = total_value - total_loan
-        series.append({
-            "year": year,
-            "total_value": round(total_value, 2),
-            "loan_balance": round(total_loan, 2),
-            "equity": round(equity, 2),
-            "realized_gains": round(cumulative_realized, 2),
-            "net_worth": round(equity + cumulative_realized, 2),
-        })
+    series = [_timeline_year_row(dated, year, current_year, _yr) for year in range(earliest_year, current_year + 1)]
 
     return {"series": series, "earliest_year": earliest_year}
+
+
+def _timeline_contrib_sold(p: dict, year: int, pyear: int, loan_amount: float, rate: float, tenure: int, yr_fn):
+    """Returns (value_delta, loan_delta, realized_delta) for a sold property in the given year."""
+    purchase_price = p.get("purchase_price") or p.get("price", 0) or 0
+    syear = yr_fn(p["sold_date"])
+    sold_price = p.get("sold_price") or purchase_price
+    if year < syear:
+        span = max(syear - pyear, 1)
+        ratio = (year - pyear) / span
+        val = purchase_price + (sold_price - purchase_price) * ratio
+        months = (year - pyear) * 12
+        return val, _loan_balance_after_months(loan_amount, rate, tenure, months), 0.0
+    return 0.0, 0.0, (sold_price - purchase_price)
+
+
+def _timeline_contrib_owned(p: dict, year: int, pyear: int, current_year: int,
+                             loan_amount: float, rate: float, tenure: int):
+    """Returns (value_delta, loan_delta) for an owned property in a given year."""
+    purchase_price = p.get("purchase_price") or p.get("price", 0) or 0
+    current_value = p.get("current_value") or purchase_price
+    span = max(current_year - pyear, 1)
+    ratio = min((year - pyear) / span, 1.0)
+    val = purchase_price + (current_value - purchase_price) * ratio
+    months = (year - pyear) * 12
+    return val, _loan_balance_after_months(loan_amount, rate, tenure, months)
+
+
+def _timeline_year_row(dated, year: int, current_year: int, yr_fn) -> dict:
+    total_value = 0.0
+    total_loan = 0.0
+    cumulative_realized = 0.0
+    for p in dated:
+        pyear = yr_fn(p["purchase_date"])
+        if year < pyear:
+            continue
+        loan_amount = max((p.get("price", 0) or 0) - (p.get("down_payment", 0) or 0), 0)
+        rate = p.get("loan_rate", 8.5) or 8.5
+        tenure = p.get("loan_tenure_years", 20) or 20
+        if p.get("status") == "sold" and p.get("sold_date"):
+            v, lb, r = _timeline_contrib_sold(p, year, pyear, loan_amount, rate, tenure, yr_fn)
+            total_value += v
+            total_loan += lb
+            cumulative_realized += r
+            continue
+        v, lb = _timeline_contrib_owned(p, year, pyear, current_year, loan_amount, rate, tenure)
+        total_value += v
+        total_loan += lb
+    equity = total_value - total_loan
+    return {
+        "year": year,
+        "total_value": round(total_value, 2),
+        "loan_balance": round(total_loan, 2),
+        "equity": round(equity, 2),
+        "realized_gains": round(cumulative_realized, 2),
+        "net_worth": round(equity + cumulative_realized, 2),
+    }
 
 
 @api_router.post("/properties", response_model=PropertyOut)
@@ -764,10 +782,7 @@ async def calc_rent_vs_buy(body: RentVsBuyRequest):
         monthly_rent *= (1 + body.rent_increase / 100)
 
         # net worth
-        buy_net_worth = property_value - loan_balance - cumulative_buy_cost + (cumulative_buy_cost - (body.down_payment))  # simplified: owned equity
-        # Cleaner: owned equity = property_value - loan_balance; minus rent paid? no, rent not paid in buy case
         owned_equity = property_value - loan_balance
-        rent_net_worth = rent_invested_corpus - cumulative_rent  # remaining corpus adjusted for rent already paid (paid from income; this is what's left invested)
 
         data.append({
             "year": year,
@@ -1091,6 +1106,87 @@ async def export_csv(body: ExportRequest, user: dict = Depends(get_current_user)
     )
 
 
+_PDF_TABLE_HEADER_STYLE = TableStyle([
+    ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#141311")),
+    ("TEXTCOLOR", (0, 0), (-1, 0), colors.HexColor("#F4F0EA")),
+    ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+    ("FONTSIZE", (0, 0), (-1, -1), 9),
+    ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.HexColor("#FAFAFA"), colors.white]),
+    ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#E0DDD8")),
+    ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+    ("LEFTPADDING", (0, 0), (-1, -1), 8),
+    ("RIGHTPADDING", (0, 0), (-1, -1), 8),
+    ("TOPPADDING", (0, 0), (-1, -1), 6),
+    ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+])
+
+_PDF_TABLE_COMPACT_STYLE = TableStyle([
+    ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#141311")),
+    ("TEXTCOLOR", (0, 0), (-1, 0), colors.HexColor("#F4F0EA")),
+    ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+    ("FONTSIZE", (0, 0), (-1, -1), 8.5),
+    ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#E0DDD8")),
+    ("TOPPADDING", (0, 0), (-1, -1), 5),
+    ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+])
+
+
+def _pdf_header_story(story, styles, user):
+    title_style = ParagraphStyle("title", parent=styles["Title"], fontName="Helvetica-Bold",
+                                 fontSize=24, textColor=colors.HexColor("#0A0908"), spaceAfter=6)
+    sub_style = ParagraphStyle("sub", parent=styles["Normal"], fontSize=9,
+                               textColor=colors.HexColor("#666666"), spaceAfter=20)
+    story.append(Paragraph("Estima — Property Decision Report", title_style))
+    story.append(Paragraph(
+        f"Prepared for {user.get('name') or user['email']} · {datetime.now(timezone.utc).strftime('%d %b %Y')}",
+        sub_style,
+    ))
+
+
+def _pdf_winner_story(story, styles, winner):
+    winner_style = ParagraphStyle("winner", parent=styles["Heading2"], fontSize=16,
+                                  textColor=colors.HexColor("#C85A32"), spaceAfter=4)
+    story.append(Paragraph("Recommended winner", ParagraphStyle(
+        "eyebrow", parent=styles["Normal"], fontSize=8, textColor=colors.HexColor("#999999"),
+        spaceAfter=6)))
+    story.append(Paragraph(winner["name"], winner_style))
+    story.append(Paragraph(
+        f"Score {winner['total_score']} · {_inr(winner['price'])} · {int(winner['area_sqft'])} sqft · {_inr(winner['price_per_sqft'])}/sqft",
+        styles["Normal"],
+    ))
+    story.append(Spacer(1, 16))
+
+
+def _pdf_ranking_table(results):
+    header = ["#", "Property", "Type", "Price", "INR/sqft", "Score"]
+    data = [header]
+    for i, r in enumerate(results, 1):
+        data.append([
+            str(i),
+            f"{r['name']}\n{r['location']}",
+            r["type"].title(),
+            _inr(r["price"]),
+            _inr(r["price_per_sqft"]),
+            str(r["total_score"]),
+        ])
+    t = Table(data, repeatRows=1, colWidths=[12 * mm, 60 * mm, 22 * mm, 32 * mm, 30 * mm, 20 * mm])
+    t.setStyle(_PDF_TABLE_HEADER_STYLE)
+    return t
+
+
+def _pdf_breakdown_table(results):
+    data = [["Property", "Location", "Amenities", "Safety", "Commute", "Resale", "Price/Value"]]
+    for r in results:
+        b = r["breakdown"]
+        data.append([
+            r["name"], str(b["location"]), str(b["amenities"]), str(b["safety"]),
+            str(b["commute"]), str(b["resale"]), str(b["price_value"]),
+        ])
+    t = Table(data, repeatRows=1)
+    t.setStyle(_PDF_TABLE_COMPACT_STYLE)
+    return t
+
+
 @api_router.post("/compare/export/pdf")
 async def export_pdf(body: ExportRequest, user: dict = Depends(get_current_user)):
     _require_pro(user)
@@ -1107,81 +1203,12 @@ async def export_pdf(body: ExportRequest, user: dict = Depends(get_current_user)
     styles = getSampleStyleSheet()
     story = []
 
-    # Header
-    title_style = ParagraphStyle("title", parent=styles["Title"], fontName="Helvetica-Bold",
-                                 fontSize=24, textColor=colors.HexColor("#0A0908"), spaceAfter=6)
-    sub_style = ParagraphStyle("sub", parent=styles["Normal"], fontSize=9,
-                               textColor=colors.HexColor("#666666"), spaceAfter=20)
-
-    story.append(Paragraph("Estima — Property Decision Report", title_style))
-    story.append(Paragraph(
-        f"Prepared for {user.get('name') or user['email']} · {datetime.now(timezone.utc).strftime('%d %b %Y')}",
-        sub_style,
-    ))
-
-    # Winner box
-    winner = results[0]
-    winner_style = ParagraphStyle("winner", parent=styles["Heading2"], fontSize=16,
-                                  textColor=colors.HexColor("#C85A32"), spaceAfter=4)
-    story.append(Paragraph("Recommended winner", ParagraphStyle(
-        "eyebrow", parent=styles["Normal"], fontSize=8, textColor=colors.HexColor("#999999"),
-        spaceAfter=6)))
-    story.append(Paragraph(winner["name"], winner_style))
-    story.append(Paragraph(
-        f"Score {winner['total_score']} · {_inr(winner['price'])} · {int(winner['area_sqft'])} sqft · {_inr(winner['price_per_sqft'])}/sqft",
-        styles["Normal"],
-    ))
-    story.append(Spacer(1, 16))
-
-    # Ranking table
-    header = ["#", "Property", "Type", "Price", "INR/sqft", "Score"]
-    data = [header]
-    for i, r in enumerate(results, 1):
-        data.append([
-            str(i),
-            f"{r['name']}\n{r['location']}",
-            r["type"].title(),
-            _inr(r["price"]),
-            _inr(r["price_per_sqft"]),
-            str(r["total_score"]),
-        ])
-    t = Table(data, repeatRows=1, colWidths=[12 * mm, 60 * mm, 22 * mm, 32 * mm, 30 * mm, 20 * mm])
-    t.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#141311")),
-        ("TEXTCOLOR", (0, 0), (-1, 0), colors.HexColor("#F4F0EA")),
-        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-        ("FONTSIZE", (0, 0), (-1, -1), 9),
-        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.HexColor("#FAFAFA"), colors.white]),
-        ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#E0DDD8")),
-        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-        ("LEFTPADDING", (0, 0), (-1, -1), 8),
-        ("RIGHTPADDING", (0, 0), (-1, -1), 8),
-        ("TOPPADDING", (0, 0), (-1, -1), 6),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
-    ]))
-    story.append(t)
+    _pdf_header_story(story, styles, user)
+    _pdf_winner_story(story, styles, results[0])
+    story.append(_pdf_ranking_table(results))
     story.append(Spacer(1, 20))
-
-    # Breakdown
     story.append(Paragraph("Score breakdown (0-10)", styles["Heading3"]))
-    breakdown_data = [["Property", "Location", "Amenities", "Safety", "Commute", "Resale", "Price/Value"]]
-    for r in results:
-        b = r["breakdown"]
-        breakdown_data.append([
-            r["name"], str(b["location"]), str(b["amenities"]), str(b["safety"]),
-            str(b["commute"]), str(b["resale"]), str(b["price_value"]),
-        ])
-    bt = Table(breakdown_data, repeatRows=1)
-    bt.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#141311")),
-        ("TEXTCOLOR", (0, 0), (-1, 0), colors.HexColor("#F4F0EA")),
-        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-        ("FONTSIZE", (0, 0), (-1, -1), 8.5),
-        ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#E0DDD8")),
-        ("TOPPADDING", (0, 0), (-1, -1), 5),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
-    ]))
-    story.append(bt)
+    story.append(_pdf_breakdown_table(results))
 
     story.append(Spacer(1, 20))
     story.append(Paragraph(
@@ -1407,73 +1434,78 @@ class ResaleEstimateRequest(BaseModel):
     target_profit_inr: float = 500000.0
 
 
+def _avg_rent_for_resale(body) -> float:
+    if body.min_rent_monthly is not None and body.current_rent_monthly is not None:
+        return (body.min_rent_monthly + body.current_rent_monthly) / 2
+    if body.current_rent_monthly is not None:
+        return body.current_rent_monthly
+    return body.rental_income_monthly
+
+
+def _make_net_proceeds_fn(P: float, loan: float, broker_pct: float, ltcg_pct: float):
+    def _net(S: float) -> float:
+        gain = max(S - P, 0)
+        tax = gain * ltcg_pct
+        return S * (1 - broker_pct) - loan - tax
+    return _net
+
+
+def _solve_sale_price_for_target(net_fn, target_np: float, upper_bound: float) -> float:
+    lo, hi = 0.0, upper_bound
+    for _ in range(60):
+        mid = (lo + hi) / 2
+        if net_fn(mid) < target_np:
+            lo = mid
+        else:
+            hi = mid
+    return hi
+
+
+def _resale_xirr(dp_initial: float, misc_expenses: float, avg_rent: float,
+                 monthly_costs: float, years: float, projected_np: float) -> float:
+    cfs = [(0, -dp_initial - misc_expenses)]
+    for y in range(1, int(years) + 1):
+        cfs.append((y * 365, (avg_rent - monthly_costs) * 12))
+    cfs.append((int(years * 365), projected_np))
+    try:
+        return _xirr(cfs) * 100
+    except Exception:
+        return 0.0
+
+
 @api_router.post("/calc/resale-estimate")
 async def resale_estimate(body: ResaleEstimateRequest):
     years = max(body.years_held, 0.01)
     projected_value = body.current_value if body.current_value else body.purchase_price * ((1 + body.appreciation_pct / 100) ** years)
 
-    # Average rent: if both min + current provided, use their average; else fallback to rental_income_monthly
-    if body.min_rent_monthly is not None and body.current_rent_monthly is not None:
-        avg_rent = (body.min_rent_monthly + body.current_rent_monthly) / 2
-    elif body.current_rent_monthly is not None:
-        avg_rent = body.current_rent_monthly
-    else:
-        avg_rent = body.rental_income_monthly
-
-    # carrying costs already borne
+    avg_rent = _avg_rent_for_resale(body)
     monthly_costs = body.maintenance_monthly + body.property_tax_yearly / 12
     total_carry = monthly_costs * 12 * years + body.misc_expenses_inr
     total_rent = avg_rent * 12 * years
-    net_carry = total_carry - total_rent  # positive = out-of-pocket, negative = net-positive
+    net_carry = total_carry - total_rent
 
-    b = body.broker_fee_pct / 100
-    ltcg = body.ltcg_pct / 100
-    loan = body.outstanding_loan
-    P = body.purchase_price
-    nc = net_carry
-    target_profit = body.target_profit_inr
+    broker_pct = body.broker_fee_pct / 100
+    ltcg_pct = body.ltcg_pct / 100
+    net_fn = _make_net_proceeds_fn(body.purchase_price, body.outstanding_loan, broker_pct, ltcg_pct)
+    upper_bound = max(body.purchase_price * 20, 1e9)
 
-    def _net_proceeds(S):
-        gain = max(S - P, 0)
-        tax = gain * ltcg
-        return S * (1 - b) - loan - tax
+    breakeven_price = _solve_sale_price_for_target(net_fn, net_carry + 0.0, upper_bound)
+    target_price = _solve_sale_price_for_target(net_fn, net_carry + body.target_profit_inr, upper_bound)
 
-    def _solve_for_target_net(target):
-        target_np = target + nc
-        lo, hi = 0.0, max(P * 20, 1e9)
-        for _ in range(60):
-            mid = (lo + hi) / 2
-            if _net_proceeds(mid) < target_np:
-                lo = mid
-            else:
-                hi = mid
-        return hi
+    projected_np = net_fn(projected_value)
+    projected_net_after_carry = projected_np - net_carry
 
-    breakeven_price = _solve_for_target_net(0.0)
-    target_price = _solve_for_target_net(target_profit)
-
-    projected_np = _net_proceeds(projected_value)
-    projected_net_after_carry = projected_np - nc
     implied_annual_return = 0.0
-    if P > 0 and years > 0:
-        capital_invested = max(P - loan, 1)
-        if projected_net_after_carry > 0:
-            implied_annual_return = ((projected_net_after_carry / capital_invested) ** (1 / years) - 1) * 100 if capital_invested > 0 else 0
+    capital_invested = max(body.purchase_price - body.outstanding_loan, 1)
+    if body.purchase_price > 0 and years > 0 and projected_net_after_carry > 0 and capital_invested > 0:
+        implied_annual_return = ((projected_net_after_carry / capital_invested) ** (1 / years) - 1) * 100
 
-    # True XIRR using cashflows: -dp at t0, periodic rent - costs, +projected_np at exit
-    dp_initial = max(P - loan, 0)
-    cfs = [(0, -dp_initial - body.misc_expenses_inr)]
-    for y in range(1, int(years) + 1):
-        cfs.append((y * 365, (avg_rent - monthly_costs) * 12))
-    cfs.append((int(years * 365), projected_np))
-    try:
-        xirr_rate = _xirr(cfs) * 100
-    except Exception:
-        xirr_rate = 0.0
+    dp_initial = max(body.purchase_price - body.outstanding_loan, 0)
+    xirr_rate = _resale_xirr(dp_initial, body.misc_expenses_inr, avg_rent, monthly_costs, years, projected_np)
 
     return {
         "projected_sale_price": round(projected_value, 2),
-        "projected_gross_proceeds": round(projected_value * (1 - b), 2),
+        "projected_gross_proceeds": round(projected_value * (1 - broker_pct), 2),
         "projected_net_proceeds_after_loan_and_tax": round(projected_np, 2),
         "projected_net_in_hand": round(projected_net_after_carry, 2),
         "breakeven_sale_price": round(breakeven_price, 2),
@@ -1634,7 +1666,7 @@ async def loan_optimizer(body: LoanOptimizerRequest):
             f"Monthly rent used: ₹{int(monthly_rent):,} (from {'your input' if body.monthly_rent > 0 else f'{body.rental_yield_pct}% yield'}).",
             f"Best leverage XIRR over {body.analysis_years} years: {round((best_leverage_xirr or {}).get('leverage_xirr_pct', 0), 1)}% at {(best_leverage_xirr or {}).get('down_payment_pct', '—')}% DP.",
             f"Max monthly cashflow: +₹{int(best_positive['monthly_cashflow']):,} at {best_positive['down_payment_pct']}% DP.",
-            f"Lower DP ⇒ higher leverage on appreciation; higher DP ⇒ better monthly cashflow. Pick your trade-off.",
+            "Lower DP ⇒ higher leverage on appreciation; higher DP ⇒ better monthly cashflow. Pick your trade-off.",
         ],
     }
 
@@ -1991,7 +2023,6 @@ async def portfolio_vs_investments(body: VsInvestmentsRequest, user: dict = Depe
 
     series = []
     total_rental_accumulated = 0.0
-    prev_year = earliest_year - 1
     for year in range(earliest_year, current_year + 1):
         prop_value = 0.0
         rental_this_year = 0.0
@@ -2042,7 +2073,6 @@ async def portfolio_vs_investments(body: VsInvestmentsRequest, user: dict = Depe
         for k, v in alt_values.items():
             row[k] = round(v, 2)
         series.append(row)
-        prev_year = year
 
     last = series[-1] if series else {}
     total_invested = sum((p.get("purchase_price") or p.get("price") or 0) for p in props)
@@ -2375,16 +2405,12 @@ def _plan_total_cost(schedule: list, loan_amount: float, rate: float, tenure_yea
       opportunity_cost (idle-cash cost)
       total_loan_interest_to_possession
     """
-    r = (rate / 100) / 12
     balance = 0.0
-    months = 0
-    buyer_emi_paid = 0.0
     total_paid = 0.0
     opp_cost = 0.0
 
     # amortize progressively: each payment from buyer adds to paid; loan disbursed proportionally
     for offset, amt, emi_by_builder in schedule:
-        months = offset
         # before this tranche, opportunity cost on remaining cash (assume buyer had full price parked)
         # simplified: opp_cost = sum over tranches of amt * return * (months_until_paid / 12)
         opp_cost += amt * (opp_return / 100) * (offset / 12) * 0.5  # half because linearly deployed
@@ -2392,7 +2418,6 @@ def _plan_total_cost(schedule: list, loan_amount: float, rate: float, tenure_yea
         balance += amt  # as if all cash from buyer; for mix with loan, skip
     # buyer EMI during construction (if subvention not applicable)
     emi = _emi(loan_amount, rate, tenure_years)
-    construction_months = possession_months
     return {
         "emi_monthly": round(emi, 2),
         "total_cash_paid_by_possession": round(total_paid, 2),
@@ -2414,7 +2439,6 @@ async def builder_plan(body: BuilderPlanRequest):
     months = max(body.possession_months, 1)
     rate = body.loan_rate
     r = (rate / 100) / 12
-    n_total_months = body.loan_tenure_years * 12
     opp = body.opportunity_return / 100
 
     # Helper: pre-EMI interest-only during construction (common in subvention): buyer pays interest * principal
@@ -2450,7 +2474,6 @@ async def builder_plan(body: BuilderPlanRequest):
     ten_down = price * 0.10
     ten_loan = price - ten_down
     # 10:90 — lender disburses at possession only, so no pre-EMI to buyer
-    ten_pre_emi = 0
     ten_opp = ten_down * opp * (months / 12)
     plans.append({
         "id": "10_90",
@@ -2468,7 +2491,6 @@ async def builder_plan(body: BuilderPlanRequest):
     # ----- 20:80 -----
     twenty_down = price * 0.20
     twenty_loan = price - twenty_down
-    twenty_pre_emi = 0
     twenty_opp = twenty_down * opp * (months / 12)
     plans.append({
         "id": "20_80",

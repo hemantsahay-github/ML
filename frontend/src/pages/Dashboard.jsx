@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 import api from "../lib/api";
 import { inr } from "../lib/format";
+import { logger } from "../lib/logger";
 import { ArrowRight, Buildings, Plus, TrendUp, Scales, MapTrifold, Calendar, MapPin } from "@phosphor-icons/react";
 
 export default function Dashboard() {
@@ -17,7 +18,7 @@ export default function Dashboard() {
       const [pRes, poRes, wRes] = await Promise.all([
         api.get("/properties"),
         api.get("/portfolio/summary"),
-        api.get("/projects/watched").catch((e) => { console.debug("watched load failed", e); return { data: { projects: [] } }; }),
+        api.get("/projects/watched").catch((e) => { logger.debug("watched load failed", e); return { data: { projects: [] } }; }),
       ]);
       setProps(pRes.data);
       setPortfolio(poRes.data);

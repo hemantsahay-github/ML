@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback } from "react";
 import { Link } from "react-router-dom";
 import api from "../lib/api";
+import { logger } from "../lib/logger";
 import { inr, inrFull } from "../lib/format";
 import Disclaimer from "../components/Disclaimer";
 import {
@@ -50,7 +51,7 @@ export default function Portfolio() {
         const { data } = await api.post("/portfolio/vs-investments", {});
         if (data.series && data.series.length > 0) setVsMarkets(data);
       } catch (e) {
-        console.debug("portfolio/vs-investments unavailable", e);
+        logger.debug("portfolio/vs-investments unavailable", e);
       }
     } finally {
       setLoading(false);

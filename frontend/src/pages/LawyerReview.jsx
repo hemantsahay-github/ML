@@ -89,7 +89,7 @@ export default function LawyerReview() {
           <div className="eyebrow mb-3">Beneficiaries</div>
           <div className="space-y-2 text-sm">
             {will.beneficiaries?.length ? will.beneficiaries.map((b, i) => (
-              <div key={i} className="flex justify-between pb-2 border-b hairline last:border-0">
+              <div key={b.email || b.name || `bene-${i}`} className="flex justify-between pb-2 border-b hairline last:border-0">
                 <span>{b.name}</span>
                 <span className="text-muted-foreground">{b.relation} {b.email && `· ${b.email}`}</span>
               </div>
@@ -101,10 +101,10 @@ export default function LawyerReview() {
           <div className="eyebrow mb-3 flex items-center gap-2"><Buildings size={12} /> Property distribution</div>
           <div className="space-y-3 text-sm">
             {will.allocations?.length ? will.allocations.map((a, i) => (
-              <div key={i} className="border hairline p-3">
+              <div key={a.property_id || `alloc-${i}`} className="border hairline p-3">
                 <div className="text-xs text-muted-foreground mb-1">Property {i + 1} · id: {a.property_id.slice(0, 8)}…</div>
-                {a.splits?.map((s, j) => (
-                  <div key={j} className="flex justify-between">
+                {a.splits?.map((s) => (
+                  <div key={`${a.property_id}-${s.beneficiary_index}`} className="flex justify-between">
                     <span>{will.beneficiaries?.[s.beneficiary_index]?.name || `Beneficiary ${s.beneficiary_index + 1}`}</span>
                     <span className="num-metric">{s.percentage}%</span>
                   </div>

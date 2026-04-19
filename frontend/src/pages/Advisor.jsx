@@ -1,5 +1,6 @@
 import { useEffect, useState, useRef, useCallback } from "react";
 import api, { formatApiErrorDetail } from "../lib/api";
+import { logger } from "../lib/logger";
 import { toast } from "sonner";
 import { PaperPlaneTilt, Sparkle, User } from "@phosphor-icons/react";
 import Disclaimer from "../components/Disclaimer";
@@ -24,7 +25,7 @@ export default function Advisor() {
       const { data } = await api.get("/properties");
       setProperties(data);
     } catch (e) {
-      console.debug("advisor: properties load failed", e);
+      logger.debug("advisor: properties load failed", e);
     }
   }, []);
 

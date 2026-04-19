@@ -15,6 +15,12 @@ const defaultWeights = {
   price_value: 0.15,
 };
 
+// Chart config (module-scope — stable refs, no re-render churn)
+const CHART_LEFT_MARGIN = { left: 40 };
+const SCORE_DOMAIN = [0, 10];
+const TOOLTIP_CURSOR = { fill: "hsl(var(--muted))" };
+const BAR_RADIUS = [0, 2, 2, 0];
+
 export default function Compare() {
   const [items, setItems] = useState([]);
   const [selected, setSelected] = useState([]);
@@ -257,12 +263,12 @@ export default function Compare() {
                 <div className="eyebrow mb-4">Total score</div>
                 <div style={{ width: "100%", height: 280 }}>
                   <ResponsiveContainer>
-                    <BarChart data={result.results} layout="vertical" margin={{ left: 40 }}>
+                    <BarChart data={result.results} layout="vertical" margin={CHART_LEFT_MARGIN}>
                       <CartesianGrid stroke="hsl(var(--border))" strokeDasharray="2 4" />
-                      <XAxis type="number" stroke="hsl(var(--muted-foreground))" domain={[0, 10]} />
+                      <XAxis type="number" stroke="hsl(var(--muted-foreground))" domain={SCORE_DOMAIN} />
                       <YAxis type="category" dataKey="name" stroke="hsl(var(--muted-foreground))" width={120} />
-                      <Tooltip cursor={{ fill: "hsl(var(--muted))" }} />
-                      <Bar dataKey="total_score" fill="#C85A32" radius={[0, 2, 2, 0]} />
+                      <Tooltip cursor={TOOLTIP_CURSOR} />
+                      <Bar dataKey="total_score" fill="#C85A32" radius={BAR_RADIUS} />
                     </BarChart>
                   </ResponsiveContainer>
                 </div>

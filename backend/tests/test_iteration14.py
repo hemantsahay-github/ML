@@ -27,11 +27,12 @@ if not os.environ.get("REACT_APP_BACKEND_URL") and os.path.exists(_FRONTEND_ENV)
 BASE_URL = os.environ["REACT_APP_BACKEND_URL"].rstrip("/")
 API = f"{BASE_URL}/api"
 
-ADMIN_EMAIL = "admin@estima.com"
-ADMIN_PASSWORD = "Admin@123"
-VERIFIED_LAWYER_EMAIL = "adv.ravi@estima.com"
-VERIFIED_LAWYER_PASSWORD = "Advocate@123"
-VERIFIED_LAWYER_ID = "69e4f192664052de23481578"
+ADMIN_EMAIL = os.environ.get("ADMIN_EMAIL", "admin@estima.com")
+ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "Admin@123")
+VERIFIED_LAWYER_EMAIL = os.environ.get("VERIFIED_LAWYER_EMAIL", "adv.ravi@estima.com")
+VERIFIED_LAWYER_PASSWORD = os.environ.get("VERIFIED_LAWYER_PASSWORD", "Advocate@123")
+VERIFIED_LAWYER_ID = os.environ.get("VERIFIED_LAWYER_ID", "69e4f192664052de23481578")
+TEST_USER_PASSWORD = os.environ.get("TEST_USER_PASSWORD", "Test@1234")
 
 
 # ---------------- Fixtures ----------------
@@ -227,7 +228,7 @@ class TestBookLawyer:
         s = requests.Session()
         email = f"TEST_nobill_{uuid.uuid4().hex[:8]}@estima.com"
         reg = s.post(f"{API}/auth/register",
-                     json={"email": email, "password": "Test@1234", "name": "TEST NoWill"},
+                     json={"email": email, "password": TEST_USER_PASSWORD, "name": "TEST NoWill"},
                      timeout=20)
         if reg.status_code not in (200, 201):
             pytest.skip(f"register failed {reg.status_code}: {reg.text[:120]}")

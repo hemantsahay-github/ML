@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useParams } from "react-router-dom";
 import api, { formatApiErrorDetail } from "../lib/api";
 import { toast } from "sonner";
@@ -13,19 +13,19 @@ export default function WitnessSign() {
   const [form, setForm] = useState({ aadhaar_last_4: "", otp: "" });
   const [step, setStep] = useState("info"); // info | otp
 
-  useEffect(() => {
-    (async () => {
-      try {
-        const { data: res } = await api.get(`/public/witness-sign/${token}`);
-        setData(res);
-        if (res.witness.status === "signed") setSigned(true);
-      } catch (e) {
-        toast.error(formatApiErrorDetail(e.response?.data?.detail) || "Invalid witness link");
-      } finally {
-        setLoading(false);
-      }
-    })();
+  const load = useCallback(async () => {
+    try {
+      const { data: res } = await api.get(`/public/witness-sign/${token}`);
+      setData(res);
+      if (res.witness.status === "signed") setSigned(true);
+    } catch (e) {
+      toast.error(formatApiErrorDetail(e.response?.data?.detail) || "Invalid witness link");
+    } finally {
+      setLoading(false);
+    }
   }, [token]);
+
+  useEffect(() => { load(); }, [load]);
 
   const sendOtp = () => {
     if (form.aadhaar_last_4.length !== 4) {

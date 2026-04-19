@@ -19,6 +19,7 @@ RAZORPAY_KEY_SECRET = "9hTiAGrlvyy3Ny2rjiutUkhq"
 
 ADMIN_EMAIL = os.environ.get("ADMIN_EMAIL", "admin@estima.com")
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "Admin@123")
+TEST_USER_PASSWORD = os.environ.get("TEST_USER_PASSWORD", "Test@1234")
 
 
 # ─────────────────────────── Fixtures ───────────────────────────
@@ -106,7 +107,7 @@ class TestRegisterTrial:
         uid = uuid.uuid4().hex[:8]
         r = s.post(f"{BASE_URL}/api/auth/register", json={
             "email": f"reg_{uid}@test.com",
-            "password": "Test@1234",
+            "password": TEST_USER_PASSWORD,
             "name": f"Reg {uid}"
         })
         assert r.status_code == 200

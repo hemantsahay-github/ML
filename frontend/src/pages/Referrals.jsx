@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import api from "../lib/api";
+import { logger } from "../lib/logger";
 import { toast } from "sonner";
 import { Copy, Gift, UsersThree, Crown, ShareNetwork, CheckCircle } from "@phosphor-icons/react";
 import Disclaimer from "../components/Disclaimer";
@@ -40,7 +41,7 @@ export default function Referrals() {
         await navigator.share(payload);
         return;
       } catch (e) {
-        console.debug("navigator.share cancelled/failed", e);
+        logger.debug("navigator.share cancelled/failed", e);
       }
     }
     copyLink();
