@@ -19,6 +19,15 @@ export function AuthProvider({ children }) {
   }, []);
 
   useEffect(() => {
+    // CRITICAL (Emergent Google Auth): If we're returning from the OAuth
+    // callback with #session_id=... in the URL, SKIP the /auth/me check.
+    // AuthCallback will exchange the session_id, set cookies, then trigger
+    // refresh() itself. Running /auth/me first would race and set user=false
+    // before the cookie exists.
+    if (typeof window !== "undefined" && window.location.hash?.includes("session_id=")) {
+      setBooted(true);
+      return;
+    }
     refresh();
   }, [refresh]);
 

@@ -5,8 +5,10 @@ import { toast } from "sonner";
 import { SignIn, GoogleLogo, PlayCircle } from "@phosphor-icons/react";
 import api, { formatApiErrorDetail } from "../lib/api";
 
+// REMINDER: DO NOT HARDCODE THE URL, OR ADD ANY FALLBACKS OR REDIRECT URLS, THIS BREAKS THE AUTH
 function googleLoginUrl() {
-  const redirect = encodeURIComponent(`${window.location.origin}/login`);
+  // Must redirect to the main app route (not /login), per Emergent Auth playbook.
+  const redirect = encodeURIComponent(`${window.location.origin}/app`);
   return `https://auth.emergentagent.com/?redirect=${redirect}`;
 }
 
