@@ -5259,6 +5259,303 @@ async def admin_list_lawyers(user: dict = Depends(get_current_user)):
     return {"lawyers": rows}
 
 
+# ============================================================
+# OD-LEVERAGED CASHFLOW-POSITIVE CALCULATOR
+# Applies overdraft interest-offset to effective EMI and computes
+# XIRR on the down-payment investment across builder plans.
+# ============================================================
+
+class OdCashflowRequest(BaseModel):
+    property_price: float
+    monthly_rent: float = 0
+    rental_yield_pct: float = 3.0            # used if monthly_rent==0
+    maintenance_monthly: float = 0
+    property_tax_yearly: float = 0
+    loan_rate: float = 8.5
+    loan_tenure_years: int = 20
+    down_payment_pct: float = 20             # buyer's own down-payment %
+    builder_plan: str = "rtm"                # rtm | 10_90 | 20_80 | 30_70 | clp | subvention
+    possession_months: int = 0               # 0 for RTM
+    surplus_cash_today: float = 0            # INR parked in OD on day 1
+    monthly_od_topup: float = 0              # INR added to OD each month
+    appreciation_pct: float = 7.0
+    analysis_years: int = 10
+
+
+def _builder_plan_schedule(body: OdCashflowRequest, loan_amount: float) -> list[tuple[int, float, bool]]:
+    """Returns [(month_offset, loan_disbursement_amount, builder_pays_preemi)] tuples.
+    Buyer-side down-payment is assumed paid at t=0 outside this schedule."""
+    months = max(body.possession_months, 0)
+    p = body.builder_plan
+    if p == "rtm" or months == 0:
+        return [(0, loan_amount, False)]
+    if p == "10_90":
+        return [(months, loan_amount, False)]
+    if p == "20_80":
+        return [(months, loan_amount, False)]
+    if p == "30_70":
+        return [(months, loan_amount, False)]
+    if p == "clp":
+        # 10 equal slabs over construction
+        slab = loan_amount / 10
+        return [(int(months * (i + 1) / 10), slab, False) for i in range(10)]
+    if p == "subvention":
+        # Full loan disbursed up-front, but builder pays pre-EMI during construction
+        return [(0, loan_amount, True)]
+    return [(0, loan_amount, False)]
+
+
+def _buyer_upfront_pct(plan: str) -> float:
+    return {"rtm": 0, "10_90": 0.10, "20_80": 0.20, "30_70": 0.30, "clp": 0.10, "subvention": 0.20}.get(plan, 0)
+
+
+@api_router.post("/calc/od-cashflow")
+async def od_cashflow(body: OdCashflowRequest):
+    rent = body.monthly_rent if body.monthly_rent > 0 else body.property_price * (body.rental_yield_pct / 100) / 12
+    costs = body.maintenance_monthly + body.property_tax_yearly / 12
+
+    # Buyer's TRUE down-payment: max of their input or builder-plan upfront floor
+    upfront_pct = max(body.down_payment_pct / 100, _buyer_upfront_pct(body.builder_plan))
+    dp = body.property_price * upfront_pct
+    loan = max(body.property_price - dp, 0)
+
+    schedule = _builder_plan_schedule(body, loan)
+    months_total = body.analysis_years * 12
+    possession_m = max(body.possession_months if body.builder_plan != "rtm" else 0, 0)
+
+    # State
+    loan_balance = 0.0           # outstanding (after disbursements, minus principal paid)
+    od_balance = body.surplus_cash_today
+    total_interest_saved = 0.0
+    total_pre_emi_buyer = 0.0
+
+    cashflow_cfs: list[tuple[int, float]] = [(0, -dp - body.surplus_cash_today)]
+    monthly_rows: list[dict] = []
+    r_m = (body.loan_rate / 100) / 12
+
+    # Pre-compute EMI based on post-possession loan
+    emi_post = _emi(loan, body.loan_rate, body.loan_tenure_years) if loan > 0 else 0
+
+    # Month loop
+    for m in range(1, months_total + 1):
+        # Process any disbursements this month
+        for (off, amt, builder_preemi) in schedule:
+            if off == m or (off == 0 and m == 1):
+                loan_balance += amt
+
+        during_construction = body.builder_plan != "rtm" and m < possession_m
+        rent_month = 0 if during_construction else rent
+        cost_month = 0 if during_construction else costs
+
+        # Interest offset by OD balance
+        offset = min(od_balance, loan_balance)
+        interest_base = max(loan_balance - offset, 0)
+        monthly_interest = interest_base * r_m
+        interest_saved = loan_balance * r_m - monthly_interest
+        total_interest_saved += interest_saved
+
+        builder_preemi_this_month = any(bp for (_, _, bp) in schedule) and during_construction
+        if during_construction:
+            if builder_preemi_this_month:
+                buyer_out = 0.0                       # builder pays pre-EMI
+            else:
+                # Buyer pays interest-only pre-EMI on disbursed portion
+                buyer_out = monthly_interest
+                total_pre_emi_buyer += buyer_out
+            principal_paid = 0.0
+        else:
+            # Post-possession — full EMI, principal reduces balance
+            buyer_out = emi_post
+            principal_paid = max(emi_post - monthly_interest, 0)
+            loan_balance = max(loan_balance - principal_paid, 0)
+
+        net_cf = rent_month - buyer_out - cost_month
+        od_balance += body.monthly_od_topup
+
+        cashflow_cfs.append((m * 30, net_cf - body.monthly_od_topup))
+
+        monthly_rows.append({
+            "month": m,
+            "loan_balance": round(loan_balance, 2),
+            "od_balance": round(od_balance, 2),
+            "interest_saved": round(interest_saved, 2),
+            "rent": round(rent_month, 2),
+            "emi_effective": round(buyer_out, 2),
+            "net_cashflow": round(net_cf, 2),
+            "is_construction": during_construction,
+        })
+
+    # Exit value at horizon
+    final_value = body.property_price * ((1 + body.appreciation_pct / 100) ** body.analysis_years)
+    exit_net = final_value - loan_balance + od_balance
+    cashflow_cfs[-1] = (cashflow_cfs[-1][0], cashflow_cfs[-1][1] + exit_net)
+
+    try:
+        xirr_pct = _xirr(cashflow_cfs) * 100
+    except Exception:
+        xirr_pct = 0.0
+
+    # Cashflow-positive metrics
+    cf_positive_months = [row for row in monthly_rows if not row["is_construction"] and row["net_cashflow"] > 0]
+    first_cf_positive_month = cf_positive_months[0]["month"] if cf_positive_months else None
+
+    # Min OD balance needed to be CF-positive from day 1 of possession
+    # CF-positive requires: rent >= effective_emi + costs
+    # effective_emi ≈ emi_post; interest_saved needs to bridge the gap
+    gap = max(emi_post + costs - rent, 0)
+    min_od_for_cf_pos = (gap / r_m) if (gap > 0 and r_m > 0) else 0
+
+    # Cumulative totals
+    total_net_cashflow_post_possession = sum(
+        r["net_cashflow"] for r in monthly_rows if not r["is_construction"]
+    )
+    avg_monthly_cf = (total_net_cashflow_post_possession /
+                     max(len([r for r in monthly_rows if not r["is_construction"]]), 1))
+
+    narrative = _od_narrative(body, dp, emi_post, rent, min_od_for_cf_pos,
+                               total_interest_saved, xirr_pct, first_cf_positive_month)
+
+    return {
+        "down_payment": round(dp, 2),
+        "loan_amount": round(loan, 2),
+        "emi_post_possession": round(emi_post, 2),
+        "monthly_rent": round(rent, 2),
+        "monthly_costs": round(costs, 2),
+        "total_interest_saved_via_od": round(total_interest_saved, 2),
+        "total_pre_emi_paid_by_buyer": round(total_pre_emi_buyer, 2),
+        "first_cashflow_positive_month": first_cf_positive_month,
+        "min_od_balance_for_cf_positive": round(min_od_for_cf_pos, 2),
+        "xirr_pct": round(xirr_pct, 2),
+        "final_property_value": round(final_value, 2),
+        "final_loan_balance": round(loan_balance, 2),
+        "final_od_balance": round(od_balance, 2),
+        "total_net_cashflow_post_possession": round(total_net_cashflow_post_possession, 2),
+        "avg_monthly_cashflow_post_possession": round(avg_monthly_cf, 2),
+        "monthly_series": monthly_rows[::6],   # every 6 months for chart
+        "narrative": narrative,
+    }
+
+
+def _od_narrative(body, dp, emi, rent, min_od, interest_saved, xirr, first_cf_pos_m):
+    lines = []
+    plan_labels = {"rtm": "Ready-to-Move", "10_90": "10:90", "20_80": "20:80", "30_70": "30:70",
+                   "clp": "Construction-Linked (CLP)", "subvention": "Subvention (builder pays pre-EMI)"}
+    lines.append(f"On a {plan_labels.get(body.builder_plan, body.builder_plan)} purchase of ₹{int(body.property_price):,}, your upfront outgo is ₹{int(dp):,}.")
+    if body.builder_plan != "rtm" and body.possession_months > 0:
+        lines.append(f"Possession in {body.possession_months} months. Post-possession EMI: ₹{int(emi):,}/mo.")
+    else:
+        lines.append(f"Post-possession EMI: ₹{int(emi):,}/mo. Rent: ₹{int(rent):,}/mo.")
+    if body.surplus_cash_today > 0:
+        lines.append(f"₹{int(body.surplus_cash_today):,} parked in OD today saves you ~₹{int(interest_saved):,} total interest over {body.analysis_years} years — money that would otherwise have gone to the bank.")
+    if min_od > 0:
+        lines.append(f"To stay cashflow-positive from day 1 of possession, keep ≥ ₹{int(min_od):,} parked in the OD account. Top-ups of ₹{int(body.monthly_od_topup):,}/mo accelerate this.")
+    else:
+        lines.append("You're already cashflow-positive — rent alone covers EMI + costs.")
+    if first_cf_pos_m:
+        lines.append(f"First CF-positive month: #{first_cf_pos_m} after possession.")
+    lines.append(f"XIRR on your down-payment over {body.analysis_years} years: {xirr:.2f}% p.a.")
+    return lines
+
+
+# ============================================================
+# ANALYTICS — footfall, time-on-page, feature usage
+# ============================================================
+
+class AnalyticsTrackIn(BaseModel):
+    route: str
+    session_id: str
+    time_on_page_ms: int = 0
+    user_agent: Optional[str] = None
+
+
+@api_router.post("/analytics/track")
+async def analytics_track(body: AnalyticsTrackIn, request: Request):
+    """Anonymous page-view + time-on-page event. No PII stored beyond session_id."""
+    user_id = None
+    try:
+        user = await get_current_user(request)
+        user_id = user.get("id") if user else None
+    except Exception:
+        user_id = None
+    doc = {
+        "route": body.route[:100],
+        "session_id": body.session_id[:64],
+        "time_on_page_ms": max(0, min(body.time_on_page_ms, 24 * 60 * 60 * 1000)),
+        "user_id": user_id,
+        "user_agent": (body.user_agent or "")[:300],
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.analytics_events.insert_one(doc)
+    return {"ok": True}
+
+
+@api_router.get("/admin/analytics")
+async def admin_analytics(user: dict = Depends(get_current_user), days: int = 30):
+    if user.get("role") != "admin":
+        raise HTTPException(403, "Admin only")
+    now = datetime.now(timezone.utc)
+    since = (now - timedelta(days=days)).isoformat()
+    since_7d = (now - timedelta(days=7)).isoformat()
+    since_24h = (now - timedelta(hours=24)).isoformat()
+
+    total = await db.analytics_events.count_documents({"created_at": {"$gte": since}})
+    last_7d = await db.analytics_events.count_documents({"created_at": {"$gte": since_7d}})
+    last_24h = await db.analytics_events.count_documents({"created_at": {"$gte": since_24h}})
+    unique_sessions_today = len(await db.analytics_events.distinct("session_id", {"created_at": {"$gte": since_24h}}))
+    unique_users_today = len(await db.analytics_events.distinct("user_id", {"created_at": {"$gte": since_24h}, "user_id": {"$ne": None}}))
+
+    # Feature / route counts
+    pipeline_top = [
+        {"$match": {"created_at": {"$gte": since}}},
+        {"$group": {
+            "_id": "$route",
+            "views": {"$sum": 1},
+            "total_time_ms": {"$sum": "$time_on_page_ms"},
+            "sessions": {"$addToSet": "$session_id"},
+        }},
+        {"$project": {
+            "route": "$_id",
+            "views": 1,
+            "avg_time_seconds": {"$cond": [{"$eq": ["$views", 0]}, 0, {"$divide": [{"$divide": ["$total_time_ms", "$views"]}, 1000]}]},
+            "unique_sessions": {"$size": "$sessions"},
+            "_id": 0,
+        }},
+        {"$sort": {"views": -1}},
+        {"$limit": 50},
+    ]
+    routes = await db.analytics_events.aggregate(pipeline_top).to_list(50)
+    for r in routes:
+        r["avg_time_seconds"] = round(r.get("avg_time_seconds", 0) or 0, 1)
+
+    # Daily pageviews for last 14 days
+    pipeline_daily = [
+        {"$match": {"created_at": {"$gte": (now - timedelta(days=14)).isoformat()}}},
+        {"$project": {"day": {"$substr": ["$created_at", 0, 10]}}},
+        {"$group": {"_id": "$day", "views": {"$sum": 1}}},
+        {"$sort": {"_id": 1}},
+    ]
+    daily_rows = await db.analytics_events.aggregate(pipeline_daily).to_list(30)
+    daily = [{"day": r["_id"], "views": r["views"]} for r in daily_rows]
+
+    # Top features = routes starting with /app/
+    top_features = [r for r in routes if r["route"].startswith("/app/")][:10]
+    least_features = sorted([r for r in routes if r["route"].startswith("/app/")], key=lambda x: x["views"])[:10]
+
+    return {
+        "days": days,
+        "total_pageviews": total,
+        "last_7d_pageviews": last_7d,
+        "last_24h_pageviews": last_24h,
+        "unique_sessions_24h": unique_sessions_today,
+        "unique_signed_in_users_24h": unique_users_today,
+        "top_routes": routes[:20],
+        "top_features": top_features,
+        "least_used_features": least_features,
+        "daily_series": daily,
+    }
+
+
+
 # NOTE: include_router MUST be after all @api_router.* decorators.
 app.include_router(api_router)
 

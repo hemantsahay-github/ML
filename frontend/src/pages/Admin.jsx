@@ -118,6 +118,7 @@ export default function Admin() {
           ["lawyers", `Lawyers (${lawyers.length})`],
           ["transactions", `Transactions (${txns.length})`],
           ["feedback", `Feedback (${feedback.length})`],
+          ["analytics", "Analytics"],
         ].map(([id, label]) => (
           <button
             key={id}
@@ -146,6 +147,8 @@ export default function Admin() {
         <LawyersTable lawyers={lawyers} onRefresh={load} />
       ) : tab === "feedback" ? (
         <FeedbackTable feedback={feedback} onRefresh={load} />
+      ) : tab === "analytics" ? (
+        <AnalyticsPanel />
       ) : (
         <TxnsTable txns={txns} />
       )}
@@ -486,3 +489,143 @@ function LawyersTable({ lawyers, onRefresh }) {
     </div>
   );
 }
+
+function AnalyticsPanel() {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [days, setDays] = useState(30);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    api.get(`/admin/analytics?days=${days}`)
+      .then(({ data }) => { if (!cancelled) setData(data); })
+      .catch((e) => { if (!cancelled) toast.error(formatApiErrorDetail(e.response?.data?.detail)); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [days]);
+
+  if (loading) return <div className="card-flat p-10 text-muted-foreground" data-testid="analytics-loading">Loading analytics…</div>;
+  if (!data) return null;
+
+  return (
+    <div className="space-y-8" data-testid="admin-analytics-panel">
+      <div className="flex items-center gap-3">
+        <span className="eyebrow text-xs">Window</span>
+        <div className="flex gap-1">
+          {[7, 30, 90].map((d) => (
+            <button
+              key={d}
+              onClick={() => setDays(d)}
+              className={`px-3 py-1 text-xs border hairline ${days === d ? "bg-[hsl(var(--primary))] text-primary-foreground" : "bg-transparent"}`}
+              data-testid={`analytics-window-${d}`}
+            >
+              {d}d
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="grid md:grid-cols-2 lg:grid-cols-4 gap-5">
+        <MiniStat label={`Pageviews · ${days}d`} value={data.total_pageviews} />
+        <MiniStat label="Pageviews · 7d" value={data.last_7d_pageviews} />
+        <MiniStat label="Pageviews · 24h" value={data.last_24h_pageviews} />
+        <MiniStat label="Unique sessions · 24h" value={data.unique_sessions_24h} />
+      </div>
+
+      <section className="card-flat p-6">
+        <div className="eyebrow mb-4">Most-used features (last {days} days)</div>
+        {data.top_features?.length ? (
+          <table className="w-full text-sm" data-testid="analytics-top-features">
+            <thead>
+              <tr className="border-b hairline text-muted-foreground uppercase text-[10px] tracking-wider">
+                <th className="text-left py-2">Feature</th>
+                <th className="text-right py-2">Views</th>
+                <th className="text-right py-2">Avg time</th>
+                <th className="text-right py-2">Sessions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {data.top_features.map((r) => (
+                <tr key={r.route} className="border-b hairline last:border-0" data-testid={`analytics-top-${r.route.replace(/\//g, "-")}`}>
+                  <td className="py-2.5"><code className="text-xs">{r.route}</code></td>
+                  <td className="py-2.5 text-right num-metric">{r.views}</td>
+                  <td className="py-2.5 text-right">{r.avg_time_seconds}s</td>
+                  <td className="py-2.5 text-right">{r.unique_sessions}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        ) : (
+          <div className="text-muted-foreground">No feature data yet.</div>
+        )}
+      </section>
+
+      {data.least_used_features?.length > 0 && (
+        <section className="card-flat p-6">
+          <div className="eyebrow mb-4">Least-used features — candidates to promote or remove</div>
+          <div className="space-y-2" data-testid="analytics-least-features">
+            {data.least_used_features.slice(0, 5).map((r) => (
+              <div key={r.route} className="flex items-center justify-between text-sm">
+                <code className="text-xs">{r.route}</code>
+                <span className="text-muted-foreground">{r.views} views · {r.avg_time_seconds}s avg</span>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
+
+      {data.daily_series?.length > 0 && (
+        <section className="card-flat p-6">
+          <div className="eyebrow mb-4">Daily pageviews · last 14 days</div>
+          <div className="flex items-end gap-2 h-32" data-testid="analytics-daily-bars">
+            {data.daily_series.map((d) => {
+              const maxV = Math.max(...data.daily_series.map((x) => x.views), 1);
+              const h = (d.views / maxV) * 100;
+              return (
+                <div key={d.day} className="flex-1 flex flex-col items-center" title={`${d.day}: ${d.views}`}>
+                  <div className="w-full bg-[hsl(var(--secondary))]" style={{ height: `${h}%` }} />
+                  <div className="text-[9px] text-muted-foreground mt-1 rotate-[-30deg] origin-top-left whitespace-nowrap">{d.day.slice(5)}</div>
+                </div>
+              );
+            })}
+          </div>
+        </section>
+      )}
+
+      <section className="card-flat p-6">
+        <div className="eyebrow mb-4">All routes (top {data.top_routes.length})</div>
+        <table className="w-full text-sm" data-testid="analytics-all-routes">
+          <thead>
+            <tr className="border-b hairline text-muted-foreground uppercase text-[10px] tracking-wider">
+              <th className="text-left py-2">Route</th>
+              <th className="text-right py-2">Views</th>
+              <th className="text-right py-2">Avg time</th>
+              <th className="text-right py-2">Sessions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {data.top_routes.map((r) => (
+              <tr key={r.route} className="border-b hairline last:border-0">
+                <td className="py-2"><code className="text-xs">{r.route}</code></td>
+                <td className="py-2 text-right num-metric">{r.views}</td>
+                <td className="py-2 text-right">{r.avg_time_seconds}s</td>
+                <td className="py-2 text-right">{r.unique_sessions}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </section>
+    </div>
+  );
+}
+
+function MiniStat({ label, value }) {
+  return (
+    <div className="card-flat p-5">
+      <div className="text-xs text-muted-foreground mb-2">{label}</div>
+      <div className="num-metric text-3xl">{Number(value || 0).toLocaleString("en-IN")}</div>
+    </div>
+  );
+}
+

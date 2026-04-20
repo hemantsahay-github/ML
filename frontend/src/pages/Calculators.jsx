@@ -31,6 +31,7 @@ const tabs = [
   { id: "uc", label: "UC expected value" },
   { id: "rtmuc", label: "RTM vs UC breakeven" },
   { id: "prepay", label: "Prepay vs Invest" },
+  { id: "odcf", label: "OD → Cashflow-positive" },
   { id: "xirr", label: "XIRR" },
 ];
 
@@ -77,6 +78,7 @@ export default function Calculators() {
       {tab === "uc" && <UCProjection />}
       {tab === "rtmuc" && <RtmVsUcBreakeven />}
       {tab === "prepay" && <PrepaymentAnalysis />}
+      {tab === "odcf" && <OdCashflow />}
       {tab === "xirr" && <XirrCalc />}
 
       <Disclaimer />
@@ -1505,6 +1507,188 @@ function RtmVsUcBreakeven() {
 /* ---------------------- XIRR ---------------------- */
 function mkFlowKey() {
   return typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : `f-${Date.now()}-${Math.random()}`;
+
+/* ------------------ OD → Cashflow-Positive ------------------ */
+const BUILDER_PLANS = [
+  { id: "rtm", label: "Ready-to-Move" },
+  { id: "10_90", label: "10:90" },
+  { id: "20_80", label: "20:80" },
+  { id: "30_70", label: "30:70" },
+  { id: "clp", label: "CLP (construction-linked)" },
+  { id: "subvention", label: "Subvention (builder pays pre-EMI)" },
+];
+
+function OdCashflow() {
+  const [form, setForm] = useState({
+    property_price: 8500000,
+    monthly_rent: 38000,
+    maintenance_monthly: 3500,
+    property_tax_yearly: 12000,
+    loan_rate: 8.5,
+    loan_tenure_years: 20,
+    down_payment_pct: 20,
+    builder_plan: "20_80",
+    possession_months: 24,
+    surplus_cash_today: 1500000,
+    monthly_od_topup: 30000,
+    appreciation_pct: 7,
+    analysis_years: 10,
+  });
+  const [res, setRes] = useState(null);
+  const [loading, setLoading] = useState(false);
+
+  const calc = async () => {
+    setLoading(true);
+    try {
+      const { data } = await api.post("/calc/od-cashflow", form);
+      setRes(data);
+    } catch (e) {
+      toast.error(formatApiErrorDetail(e.response?.data?.detail));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const up = (k, v) => setForm({ ...form, [k]: v });
+  const showUC = form.builder_plan !== "rtm";
+
+  return (
+    <div className="grid lg:grid-cols-2 gap-8" data-testid="od-cashflow-calc">
+      <div className="card-flat p-8">
+        <div className="eyebrow mb-2">Overdraft-leveraged cashflow</div>
+        <h2 className="font-serif text-3xl mb-2">Rental property that pays itself.</h2>
+        <p className="text-sm text-muted-foreground mb-6">
+          Park surplus cash in an SBI Maxgain / HDFC Home Saver / Kotak Smart overdraft. Interest offsets daily → effective EMI drops → rent covers it. Works on RTM and under-construction plans.
+        </p>
+
+        <div className="grid grid-cols-2 gap-4">
+          <NumF label="Property price (₹)" value={form.property_price} onChange={(v) => up("property_price", v)} tid="odcf-price" />
+          <NumF label="Expected rent/mo (₹)" value={form.monthly_rent} onChange={(v) => up("monthly_rent", v)} tid="odcf-rent" />
+          <NumF label="Down payment %" value={form.down_payment_pct} onChange={(v) => up("down_payment_pct", v)} tid="odcf-dp" />
+          <NumF label="Loan rate %" value={form.loan_rate} onChange={(v) => up("loan_rate", v)} tid="odcf-rate" />
+          <NumF label="Loan tenure (yrs)" value={form.loan_tenure_years} onChange={(v) => up("loan_tenure_years", v)} tid="odcf-tenor" />
+          <NumF label="Maintenance/mo (₹)" value={form.maintenance_monthly} onChange={(v) => up("maintenance_monthly", v)} tid="odcf-maint" />
+          <NumF label="Property tax/yr (₹)" value={form.property_tax_yearly} onChange={(v) => up("property_tax_yearly", v)} tid="odcf-tax" />
+          <NumF label="Surplus parked in OD today (₹)" value={form.surplus_cash_today} onChange={(v) => up("surplus_cash_today", v)} tid="odcf-surplus" />
+          <NumF label="Monthly top-up to OD (₹)" value={form.monthly_od_topup} onChange={(v) => up("monthly_od_topup", v)} tid="odcf-topup" />
+          <NumF label="Appreciation % p.a." value={form.appreciation_pct} onChange={(v) => up("appreciation_pct", v)} tid="odcf-appr" />
+          <NumF label="Analysis horizon (yrs)" value={form.analysis_years} onChange={(v) => up("analysis_years", v)} tid="odcf-horizon" />
+          <label className="block col-span-2">
+            <span className="eyebrow block mb-1.5">Builder plan</span>
+            <select className="input-dark w-full px-3 py-2" value={form.builder_plan} onChange={(e) => up("builder_plan", e.target.value)} data-testid="odcf-plan">
+              {BUILDER_PLANS.map((p) => <option key={p.id} value={p.id}>{p.label}</option>)}
+            </select>
+          </label>
+          {showUC && (
+            <NumF label="Possession in (months)" value={form.possession_months} onChange={(v) => up("possession_months", v)} tid="odcf-possession" />
+          )}
+        </div>
+
+        <button onClick={calc} disabled={loading} className="btn-primary px-6 py-3 text-sm mt-6" data-testid="odcf-calculate">
+          {loading ? "Crunching…" : "Calculate"}
+        </button>
+      </div>
+
+      <div className="space-y-6">
+        {!res ? (
+          <div className="card-flat p-10 text-center text-muted-foreground" data-testid="odcf-empty">
+            Enter your numbers → see the exact OD balance + top-ups needed to keep this rental always cashflow-positive.
+          </div>
+        ) : (
+          <>
+            <div className="card-flat p-6" data-testid="odcf-result">
+              <div className="eyebrow mb-2">XIRR on down-payment</div>
+              <div className="num-metric text-5xl" data-testid="odcf-xirr">{res.xirr_pct}%</div>
+              <div className="text-sm text-muted-foreground mt-2">Over {form.analysis_years} years — includes interest saved via OD, net cashflow, and property exit value.</div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <Kpi label="Down payment" value={`₹${Number(res.down_payment).toLocaleString("en-IN")}`} />
+              <Kpi label="Loan" value={`₹${Number(res.loan_amount).toLocaleString("en-IN")}`} />
+              <Kpi label="Post-possession EMI" value={`₹${Number(res.emi_post_possession).toLocaleString("en-IN")}`} />
+              <Kpi label="Min OD for CF-positive" value={`₹${Number(res.min_od_balance_for_cf_positive).toLocaleString("en-IN")}`} testid="odcf-min-od" />
+              <Kpi label="Total interest saved" value={`₹${Number(res.total_interest_saved_via_od).toLocaleString("en-IN")}`} tone="secondary" />
+              <Kpi label="Avg monthly CF (post-possession)" value={`₹${Number(res.avg_monthly_cashflow_post_possession).toLocaleString("en-IN")}`} tone={res.avg_monthly_cashflow_post_possession >= 0 ? "secondary" : "destructive"} />
+            </div>
+
+            <div className="card-flat p-6">
+              <div className="eyebrow mb-3">Narrative</div>
+              <ul className="space-y-2.5" data-testid="odcf-narrative">
+                {res.narrative.map((n, i) => (
+                  <li key={`${n.slice(0, 24)}-${i}`} className="flex gap-3 text-sm">
+                    <span className="text-[hsl(var(--secondary))]">▸</span>
+                    <span>{n}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+
+            {res.monthly_series?.length > 0 && (
+              <div className="card-flat p-6">
+                <div className="eyebrow mb-3">Monthly trajectory (every 6 months)</div>
+                <table className="w-full text-xs" data-testid="odcf-series">
+                  <thead>
+                    <tr className="border-b hairline text-muted-foreground uppercase text-[9px] tracking-wider">
+                      <th className="text-left py-2">Month</th>
+                      <th className="text-right py-2">Loan bal</th>
+                      <th className="text-right py-2">OD bal</th>
+                      <th className="text-right py-2">Int saved</th>
+                      <th className="text-right py-2">Rent</th>
+                      <th className="text-right py-2">EMI eff.</th>
+                      <th className="text-right py-2">Net CF</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {res.monthly_series.map((r) => (
+                      <tr key={r.month} className={`border-b hairline last:border-0 ${r.is_construction ? "opacity-60" : ""}`}>
+                        <td className="py-1.5">{r.month}{r.is_construction ? " 🏗" : ""}</td>
+                        <td className="py-1.5 text-right">₹{Number(r.loan_balance).toLocaleString("en-IN")}</td>
+                        <td className="py-1.5 text-right">₹{Number(r.od_balance).toLocaleString("en-IN")}</td>
+                        <td className="py-1.5 text-right text-[hsl(var(--secondary))]">₹{Number(r.interest_saved).toFixed(0)}</td>
+                        <td className="py-1.5 text-right">₹{Number(r.rent).toLocaleString("en-IN")}</td>
+                        <td className="py-1.5 text-right">₹{Number(r.emi_effective).toLocaleString("en-IN")}</td>
+                        <td className={`py-1.5 text-right ${r.net_cashflow >= 0 ? "text-[hsl(var(--secondary))]" : "text-destructive"}`}>
+                          ₹{Number(r.net_cashflow).toLocaleString("en-IN")}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function NumF({ label, value, onChange, tid }) {
+  return (
+    <label className="block">
+      <span className="eyebrow block mb-1.5">{label}</span>
+      <input
+        type="number"
+        className="input-dark w-full px-3 py-2"
+        value={value}
+        onChange={(e) => onChange(Number(e.target.value || 0))}
+        data-testid={tid}
+      />
+    </label>
+  );
+}
+
+function Kpi({ label, value, tone, testid }) {
+  const toneClass = tone === "secondary" ? "text-[hsl(var(--secondary))]" : tone === "destructive" ? "text-destructive" : "text-foreground";
+  return (
+    <div className="card-flat p-4" data-testid={testid}>
+      <div className="text-[10px] text-muted-foreground mb-1 uppercase tracking-wider">{label}</div>
+      <div className={`num-metric text-lg ${toneClass}`}>{value}</div>
+    </div>
+  );
+}
+
+
 }
 
 function XirrCalc() {

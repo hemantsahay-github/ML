@@ -28,6 +28,7 @@ import LawyerRegister from "./pages/LawyerRegister";
 import DisclaimerPage from "./pages/DisclaimerPage";
 import SharedReport from "./pages/SharedReport";
 import AuthCallback from "./pages/AuthCallback";
+import AnalyticsTracker from "./components/AnalyticsTracker";
 
 function Router() {
   const location = useLocation();
@@ -36,7 +37,9 @@ function Router() {
     return <AuthCallback />;
   }
   return (
-    <Routes>
+    <>
+      <AnalyticsTracker />
+      <Routes>
       <Route path="/" element={<Landing />} />
       <Route path="/login" element={<Login />} />
       <Route path="/register" element={<Register />} />
@@ -85,6 +88,7 @@ function Router() {
       </Route>
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
+    </>
   );
 }
 
