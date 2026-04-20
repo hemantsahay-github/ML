@@ -360,3 +360,28 @@ Personal property buying options and decision making and managing — comparing 
 - Swap Resend / Twilio / UIDAI Aadhaar mocks for real providers when API keys supplied.
 - Admin cleanup endpoint to bulk-delete throwaway `TEST_*` accounts from seed runs.
 
+
+
+## Implemented (2026-04-20) — Iteration 16
+
+**OD Cashflow Calculator (P0 user request):**
+- Backend: `POST /api/calc/od-cashflow` — OdCashflowRequest model + `_builder_plan_schedule` + `_buyer_upfront_pct` helpers + `_od_narrative` generator. Supports builder plans: `rtm`, `10_90`, `20_80`, `30_70`, `clp` (10-slab CLP), `subvention` (builder pays pre-EMI). Applies XIRR to buyer's down-payment CFs.
+- Returns: `xirr_pct`, `emi_post_possession`, `min_od_balance_for_cf_positive`, `total_interest_saved_via_od`, `avg_monthly_cashflow_post_possession`, `monthly_series` (every 6 months for chart), narrative lines.
+- Frontend: new tab `odcf` in `/app/frontend/src/pages/Calculators.jsx` (lines 1521-1690). Testids: `od-cashflow-calc`, `odcf-calculate`, `odcf-result`, `odcf-xirr`, `odcf-narrative`, `odcf-series`, `odcf-min-od`.
+
+**Admin Analytics (P0 user request):**
+- Backend: `POST /api/analytics/track` (anonymous event sink, defensive truncation on all fields) + `GET /api/admin/analytics?days=N` (admin-only, 403/401 gated).
+- Returns: `total_pageviews`, `last_7d_pageviews`, `last_24h_pageviews`, `unique_sessions_24h`, `top_routes`, `top_features` (filtered to `/app/*`), `least_used_features`, `daily_series` (last 14d).
+- Frontend: new `AnalyticsTracker` component wrapped in `App.js` — posts a page-view event on every route change (and `beforeunload` via `sendBeacon`). Session id kept in `sessionStorage`, no PII.
+- New `AnalyticsPanel` tab in `Admin.jsx` (lines 493-620). Testids: `admin-analytics-panel`, `analytics-top-features`, `analytics-all-routes`, `analytics-least-features`, `analytics-daily-bars`, `analytics-window-{7|30|90}`.
+
+**Regression fix:**
+- `Calculators.jsx` — `mkFlowKey()` was missing its closing `}` while a stray `}` at the bottom of the file compensated. Webpack + ESLint silently accepted it but the file was semantically broken. Cleaned up both — lint passes and all 15 Calculator tabs render.
+
+**Tests:** iteration_16.json — 9/9 backend pytest, 15/15 calculator tabs, Admin Analytics panel end-to-end verified. Zero regressions.
+
+## Backlog / Next (unchanged)
+- P1: Update Guide + Landing pages with documentation for the new OD-Cashflow calculator + Lawyer Marketplace.
+- P2: Domain-router split of `server.py` (now 5566 lines — technical debt is accumulating per reviewer).
+- P2: Continue frontend splits — `Calculators.jsx` (now 1777L) is next candidate.
+- P2: Swap Resend / Twilio / UIDAI Aadhaar mocks for real providers when API keys supplied.
