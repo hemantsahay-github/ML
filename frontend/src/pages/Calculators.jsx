@@ -1507,6 +1507,7 @@ function RtmVsUcBreakeven() {
 /* ---------------------- XIRR ---------------------- */
 function mkFlowKey() {
   return typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : `f-${Date.now()}-${Math.random()}`;
+}
 
 /* ------------------ OD → Cashflow-Positive ------------------ */
 const BUILDER_PLANS = [
@@ -1686,9 +1687,6 @@ function Kpi({ label, value, tone, testid }) {
       <div className={`num-metric text-lg ${toneClass}`}>{value}</div>
     </div>
   );
-}
-
-
 }
 
 function XirrCalc() {

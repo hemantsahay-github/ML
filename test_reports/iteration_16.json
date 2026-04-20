@@ -1,0 +1,32 @@
+{
+  "summary": "Iteration 16 — Tested OD-Cashflow Calculator + Admin Analytics endpoints AND verified the Calculators.jsx mkFlowKey syntax-fix regression. Backend: 9/9 pytest passed (3 OD-CF plans rtm/20_80/subvention + 6 analytics: anonymous track, multi-route increment, 401 anon, 403 non-admin, full field shape, days param). Frontend: all 15 Calculator tabs (wealth/car/emi/rentbuy/invest/cashflow/rentcf/resale/optimizer/builder/uc/rtmuc/prepay/xirr/odcf) render without console errors after demo login — confirms mkFlowKey brace fix is clean. ODCF tab: odcf-calculate posts and odcf-result, odcf-xirr, odcf-narrative, odcf-series all populate. Admin Analytics tab: admin-analytics-panel + analytics-top-features + analytics-all-routes all visible; analytics-window-7 and analytics-window-90 toggles work; AnalyticsTracker is firing (panel showed 22 pageviews/90d, 8 unique sessions/24h, /app/calculators top route with 6 views/9.7s avg).",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration16.py",
+    "/app/test_reports/pytest/iteration_16.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "OdCashflowRequest+od_cashflow (server.py L5268-5436) is well-structured: builder-plan schedule helper, _buyer_upfront_pct floor, OD interest-offset math, narrative builder all factored. One minor math note: cashflow_cfs.append((m*30, net_cf - body.monthly_od_topup)) — subtracting the OD topup from the cashflow series is intentional (treats topup as cash already counted in OD growth, not as additional outflow), but the comment could make this clearer.",
+    "AnalyticsTrackIn truncates fields properly (route[:100], session_id[:64], time_on_page_ms clamped 0..24h, user_agent[:300]) — good defensive coding against abuse.",
+    "admin_analytics aggregation is correct: uses created_at as ISO string — string comparison works because ISO-8601 sorts lexicographically. Pipeline uses $addToSet on session_id for unique counts, $cond guard against zero-views division — solid.",
+    "Top-features filter `r['route'].startswith('/app/')` correctly distinguishes app routes from public pages. least_used_features sort ascending by views — semantically correct.",
+    "Auth gate on /api/admin/analytics: returns 403 for non-admin (verified), 401 for anon (verified). No bypass.",
+    "Calculators.jsx mkFlowKey brace fix: lint clean, all 15 tabs render in UI test — no JSX/JS error introduced.",
+    "AnalyticsTracker (frontend) is correctly wrapped in App.js and produces real events visible in admin panel — end-to-end loop verified.",
+    "Code-quality nit: server.py is now 5566 lines — domain-router split (calculators / analytics / lawyers / portfolio) is overdue. Not blocking but technical debt is accumulating."
+  ],
+  "updated_files": ["/app/backend/tests/test_iteration16.py"],
+  "success_rate": {"backend": "100% (9/9)", "frontend": "100% (15/15 calc tabs + ODCF result + Admin analytics panel)"},
+  "test_credentials": "admin@estima.com / Admin@123 ; demo via /api/auth/demo-login",
+  "seed_data_creation": "Tests insert ~4 anonymous analytics_events with TEST_-prefixed session_ids — small footprint, no cleanup needed (analytics is append-only).",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Iteration 16 features fully verified: (1) POST /api/calc/od-cashflow accepts plans rtm/10_90/20_80/30_70/clp/subvention. Subvention sets buyer pre-EMI to 0 (verified). (2) /api/admin/analytics requires role=admin (403 demo, 401 anon). Returns top_features filtered to /app/* routes. (3) AnalyticsTracker is wired in App.js — every route change posts to /api/analytics/track and panel data was visible end-to-end. (4) Calculators tabs all use data-testid='tab-{id}' pattern; ODCF results use odcf-result/odcf-xirr/odcf-narrative/odcf-series testids. (5) Demo user lands at /app (not /app/dashboard) and shows an onboarding modal — must click 'Skip tour' before further navigation in playwright tests. (6) Console has 2 benign 401 errors on initial /api/auth/me polling before login completes — not regressions, pre-existing.",
+  "rca of the issue": "No bugs found this iteration. Both new features (OD-CF + Admin Analytics) and the mkFlowKey syntax-fix regression all green."
+}
