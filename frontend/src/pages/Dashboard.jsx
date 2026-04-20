@@ -286,9 +286,9 @@ function MySharesPanel() {
     if (!window.confirm(`Delete "${s.title}"? The public link will stop working.`)) return;
     try {
       await api.delete(`/shares/${s.share_id}`);
-      setShares(shares.filter((x) => x.share_id !== s.share_id));
+      setShares((prev) => prev.filter((x) => x.share_id !== s.share_id));
       toast.success("Deleted");
-    } catch (e) {
+    } catch {
       toast.error("Couldn't delete");
     }
   };

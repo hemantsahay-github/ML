@@ -362,8 +362,23 @@ Personal property buying options and decision making and managing — comparing 
 
 
 
-## Implemented (2026-04-20) — Iteration 18
+## Implemented (2026-04-20) — Iteration 19
 
+**AI Buyer's Letter on Rental Snowball (P1 user request):**
+- Backend: `POST /api/calc/rental-snowball/ai-narrative` (auth required) — calls Claude Sonnet 4.5 via Emergent LLM key with a compact pruned payload (purchases[:6], yearly_snapshots[:15], JSON trimmed to 8000 chars). Returns a 3-paragraph plain-prose letter: Verdict → Why-delayed → Highest-leverage-lever. System prompt enforces no markdown, no emojis, ₹ with lakh/crore.
+- Frontend: new "Get AI buyer's letter" button on the Snowball Narrative card. State-managed: hides on re-calc, toggles label (`Get AI…` → `Thinking…` → `Regenerate AI letter`). Renders each paragraph as a separate `<p>`.
+
+**My Shared Reports panel on Dashboard (P1 user request):**
+- `MySharesPanel` in `Dashboard.jsx` — fetches `/api/shares`, renders a kind-aware table (Snowball / OD Cashflow / Comparison badge) with title, detail column, created-at, and three per-row actions: WhatsApp (opens `wa.me/?text=…` pre-filled with kind-aware message), Copy (clipboard with toast fallback), Delete (confirm → DELETE `/api/shares/{id}` → local state update via functional setter).
+- Hides itself when the user has zero shares.
+
+**Guide + Landing updates:**
+- `Guide.jsx` — Calculators feature card now mentions Rental Snowball. Share card rewritten to describe all three share kinds + dashboard panel actions.
+- `Landing.jsx` — feature tagline bumped from "14 calculators with XIRR" → "15 calculators incl. Rental Snowball" and copy updated.
+
+**Tests:** iteration_19.json — 4/4 backend pytest (AI auth-gated 401, real Claude call success 200 with 3-paragraph format, token-pruning, shares-list regression) + full frontend e2e (AI letter, MySharesPanel including delete flow, guide, state reset on re-calc) all green. Zero console errors. One React best-practice nit fixed inline (`setShares(prev => …)` stale-closure safety).
+
+## Implemented (2026-04-20) — Iteration 18
 **Rental Snowball — replaces single-flat OD-Cashflow simulator:**
 - Backend: `POST /api/calc/rental-snowball` (anonymous). Model: `RentalSnowballRequest { starting_od_balance, monthly_surplus, loan_rate_pct, loan_tenure_years, rent_escalation_pct, appreciation_pct, analysis_years, target_flats: [TargetFlat{name, price_today, down_payment_pct, monthly_rent_today, is_under_construction, construction_months, desired_buy_month?}] }`. Month-loop simulator: OD pot in-flows = surplus + rents; out-flows = EMIs + pre-EMIs + DP withdrawals; autopicks next affordable flat each month unless `desired_buy_month` forces; appreciation applies to future purchase prices; rent escalates from today; UC flats pay interest-only pre-EMI during construction then switch to full EMI + rent. Returns `xirr_pct` (on DP cashflows incl. starting OD + terminal net-worth), `first_operating_cf_positive_month`, `first_cumulative_cf_positive_month`, terminal net-worth / OD / loan, purchases[], monthly_series[::3], yearly_snapshots[], narrative[].
 - Backend: `POST /api/calc/rental-snowball/share` (auth) — snapshots inputs + server-computed result into `shares` with `kind: "snowball"`. `GET /api/shares` list discriminator adds snowball branch with `xirr_pct` + `total_purchases`.
