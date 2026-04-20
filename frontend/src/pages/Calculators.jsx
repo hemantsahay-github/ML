@@ -31,7 +31,7 @@ const tabs = [
   { id: "uc", label: "UC expected value" },
   { id: "rtmuc", label: "RTM vs UC breakeven" },
   { id: "prepay", label: "Prepay vs Invest" },
-  { id: "odcf", label: "OD → Cashflow-positive" },
+  { id: "odcf", label: "Rental Snowball (OD)" },
   { id: "xirr", label: "XIRR" },
 ];
 
@@ -78,7 +78,7 @@ export default function Calculators() {
       {tab === "uc" && <UCProjection />}
       {tab === "rtmuc" && <RtmVsUcBreakeven />}
       {tab === "prepay" && <PrepaymentAnalysis />}
-      {tab === "odcf" && <OdCashflow />}
+      {tab === "odcf" && <RentalSnowball />}
       {tab === "xirr" && <XirrCalc />}
 
       <Disclaimer />
@@ -1509,45 +1509,65 @@ function mkFlowKey() {
   return typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : `f-${Date.now()}-${Math.random()}`;
 }
 
-/* ------------------ OD → Cashflow-Positive ------------------ */
-const BUILDER_PLANS = [
-  { id: "rtm", label: "Ready-to-Move" },
-  { id: "10_90", label: "10:90" },
-  { id: "20_80", label: "20:80" },
-  { id: "30_70", label: "30:70" },
-  { id: "clp", label: "CLP (construction-linked)" },
-  { id: "subvention", label: "Subvention (builder pays pre-EMI)" },
-];
+/* ------------------ Rental Snowball (OD → multi-flat CF-positive) ------------------ */
+const EMPTY_FLAT = () => ({
+  _k: mkFlowKey(),
+  name: "Flat",
+  price_today: 8500000,
+  down_payment_pct: 20,
+  monthly_rent_today: 35000,
+  is_under_construction: false,
+  construction_months: 0,
+  desired_buy_month: "",
+});
 
-function OdCashflow() {
+function RentalSnowball() {
   const [form, setForm] = useState({
-    property_price: 8500000,
-    monthly_rent: 38000,
-    maintenance_monthly: 3500,
-    property_tax_yearly: 12000,
-    loan_rate: 8.5,
+    starting_od_balance: 1500000,
+    monthly_surplus: 80000,
+    loan_rate_pct: 8.5,
     loan_tenure_years: 20,
-    down_payment_pct: 20,
-    builder_plan: "20_80",
-    possession_months: 24,
-    surplus_cash_today: 1500000,
-    monthly_od_topup: 30000,
+    rent_escalation_pct: 5,
     appreciation_pct: 7,
-    analysis_years: 10,
+    analysis_years: 15,
   });
+  const [flats, setFlats] = useState([
+    { ...EMPTY_FLAT(), name: "Flat 1 – RTM Pune" },
+    { ...EMPTY_FLAT(), name: "Flat 2 – UC Hinjewadi", price_today: 9500000, monthly_rent_today: 42000, is_under_construction: true, construction_months: 30 },
+    { ...EMPTY_FLAT(), name: "Flat 3 – RTM Mumbai", price_today: 15000000, monthly_rent_today: 65000 },
+  ]);
   const [res, setRes] = useState(null);
   const [loading, setLoading] = useState(false);
   const [sharing, setSharing] = useState(false);
   const [shareUrl, setShareUrl] = useState("");
+  const [showAllMonths, setShowAllMonths] = useState(false);
+
+  const up = (k, v) => setForm({ ...form, [k]: v });
+  const upFlat = (i, k, v) => setFlats(flats.map((f, j) => (j === i ? { ...f, [k]: v } : f)));
+  const addFlat = () => setFlats([...flats, EMPTY_FLAT()]);
+  const delFlat = (i) => setFlats(flats.filter((_, j) => j !== i));
+
+  const payload = () => ({
+    ...form,
+    target_flats: flats.map((f) => ({
+      name: f.name,
+      price_today: f.price_today,
+      down_payment_pct: f.down_payment_pct,
+      monthly_rent_today: f.monthly_rent_today,
+      is_under_construction: f.is_under_construction,
+      construction_months: f.construction_months,
+      desired_buy_month: f.desired_buy_month === "" || f.desired_buy_month === null ? null : Number(f.desired_buy_month),
+    })),
+  });
 
   const calc = async () => {
     setLoading(true);
     try {
-      const { data } = await api.post("/calc/od-cashflow", form);
+      const { data } = await api.post("/calc/rental-snowball", payload());
       setRes(data);
       setShareUrl("");
     } catch (e) {
-      toast.error(formatApiErrorDetail(e.response?.data?.detail));
+      toast.error(formatApiErrorDetail(e.response?.data?.detail) || "Calc failed");
     } finally {
       setLoading(false);
     }
@@ -1556,12 +1576,12 @@ function OdCashflow() {
   const share = async () => {
     setSharing(true);
     try {
-      const title = `OD cashflow · ₹${Number(form.property_price).toLocaleString("en-IN")} · ${form.builder_plan.toUpperCase()}`;
-      const { data } = await api.post("/calc/od-cashflow/share", { inputs: form, title });
+      const title = `Snowball · ${flats.length} flats · ${form.analysis_years}y`;
+      const { data } = await api.post("/calc/rental-snowball/share", { inputs: payload(), title });
       const url = `${window.location.origin}${data.url}`;
       setShareUrl(url);
       try { await navigator.clipboard?.writeText(url); } catch { /* no-op */ }
-      toast.success("Link copied — send it to your spouse, CA, or broker");
+      toast.success("Link copied — send to your spouse, CA, or broker");
     } catch (e) {
       toast.error(formatApiErrorDetail(e.response?.data?.detail) || "Login required to share");
     } finally {
@@ -1569,152 +1589,280 @@ function OdCashflow() {
     }
   };
 
-  const up = (k, v) => setForm({ ...form, [k]: v });
-  const showUC = form.builder_plan !== "rtm";
+  const chartData = res?.monthly_series?.map((r) => ({
+    month: r.month,
+    "OD pot": Math.round(r.od_balance),
+    "Loan balance": Math.round(r.total_loan_balance),
+    "Cumulative CF": Math.round(r.cumulative_operating_cf),
+  })) || [];
 
   return (
-    <div className="grid lg:grid-cols-2 gap-8" data-testid="od-cashflow-calc">
-      <div className="card-flat p-8">
-        <div className="eyebrow mb-2">Overdraft-leveraged cashflow</div>
-        <h2 className="font-serif text-3xl mb-2">Rental property that pays itself.</h2>
-        <p className="text-sm text-muted-foreground mb-6">
-          Park surplus cash in an SBI Maxgain / HDFC Home Saver / Kotak Smart overdraft. Interest offsets daily → effective EMI drops → rent covers it. Works on RTM and under-construction plans.
+    <div data-testid="snowball-calc">
+      <div className="card-flat p-8 mb-6">
+        <div className="eyebrow mb-2">Rental snowball</div>
+        <h2 className="font-serif text-3xl mb-2">One OD pot. Many flats. Compound to cashflow-positive.</h2>
+        <p className="text-sm text-muted-foreground">
+          Your OD pot grows from salary surplus + rents − EMIs − pre-EMIs. When it has enough for the next down-payment, you buy. Watch the month your portfolio self-funds.
         </p>
+      </div>
 
-        <div className="grid grid-cols-2 gap-4">
-          <NumF label="Property price (₹)" value={form.property_price} onChange={(v) => up("property_price", v)} tid="odcf-price" />
-          <NumF label="Expected rent/mo (₹)" value={form.monthly_rent} onChange={(v) => up("monthly_rent", v)} tid="odcf-rent" />
-          <NumF label="Down payment %" value={form.down_payment_pct} onChange={(v) => up("down_payment_pct", v)} tid="odcf-dp" />
-          <NumF label="Loan rate %" value={form.loan_rate} onChange={(v) => up("loan_rate", v)} tid="odcf-rate" />
-          <NumF label="Loan tenure (yrs)" value={form.loan_tenure_years} onChange={(v) => up("loan_tenure_years", v)} tid="odcf-tenor" />
-          <NumF label="Maintenance/mo (₹)" value={form.maintenance_monthly} onChange={(v) => up("maintenance_monthly", v)} tid="odcf-maint" />
-          <NumF label="Property tax/yr (₹)" value={form.property_tax_yearly} onChange={(v) => up("property_tax_yearly", v)} tid="odcf-tax" />
-          <NumF label="Surplus parked in OD today (₹)" value={form.surplus_cash_today} onChange={(v) => up("surplus_cash_today", v)} tid="odcf-surplus" />
-          <NumF label="Monthly top-up to OD (₹)" value={form.monthly_od_topup} onChange={(v) => up("monthly_od_topup", v)} tid="odcf-topup" />
-          <NumF label="Appreciation % p.a." value={form.appreciation_pct} onChange={(v) => up("appreciation_pct", v)} tid="odcf-appr" />
-          <NumF label="Analysis horizon (yrs)" value={form.analysis_years} onChange={(v) => up("analysis_years", v)} tid="odcf-horizon" />
-          <label className="block col-span-2">
-            <span className="eyebrow block mb-1.5">Builder plan</span>
-            <select className="input-dark w-full px-3 py-2" value={form.builder_plan} onChange={(e) => up("builder_plan", e.target.value)} data-testid="odcf-plan">
-              {BUILDER_PLANS.map((p) => <option key={p.id} value={p.id}>{p.label}</option>)}
-            </select>
-          </label>
-          {showUC && (
-            <NumF label="Possession in (months)" value={form.possession_months} onChange={(v) => up("possession_months", v)} tid="odcf-possession" />
+      <div className="grid lg:grid-cols-[440px_1fr] gap-8">
+        <div className="space-y-5">
+          <div className="card-flat p-6">
+            <div className="eyebrow mb-3">Pot & assumptions</div>
+            <div className="grid grid-cols-2 gap-3">
+              <SnowNum label="Starting OD (₹)" value={form.starting_od_balance} onChange={(v) => up("starting_od_balance", v)} tid="snow-start-od" />
+              <SnowNum label="Monthly surplus (₹)" value={form.monthly_surplus} onChange={(v) => up("monthly_surplus", v)} tid="snow-surplus" />
+              <SnowNum label="Loan rate %" value={form.loan_rate_pct} onChange={(v) => up("loan_rate_pct", v)} step="0.1" tid="snow-rate" />
+              <SnowNum label="Tenure (yrs)" value={form.loan_tenure_years} onChange={(v) => up("loan_tenure_years", v)} tid="snow-tenor" />
+              <SnowNum label="Rent escalation % p.a." value={form.rent_escalation_pct} onChange={(v) => up("rent_escalation_pct", v)} step="0.1" tid="snow-rent-esc" />
+              <SnowNum label="Appreciation % p.a." value={form.appreciation_pct} onChange={(v) => up("appreciation_pct", v)} step="0.1" tid="snow-appr" />
+              <SnowNum label="Analysis horizon (yrs)" value={form.analysis_years} onChange={(v) => up("analysis_years", v)} tid="snow-horizon" />
+            </div>
+          </div>
+
+          <div className="card-flat p-6">
+            <div className="flex items-center justify-between mb-3">
+              <div className="eyebrow">Target flats ({flats.length})</div>
+              <button onClick={addFlat} className="text-xs underline text-[hsl(var(--secondary))]" data-testid="snow-add-flat">+ Add flat</button>
+            </div>
+            <div className="space-y-4">
+              {flats.map((f, i) => (
+                <div key={f._k} className="border hairline p-4 space-y-3" data-testid={`snow-flat-${i}`}>
+                  <div className="flex items-center gap-2">
+                    <input
+                      className="input-dark w-full px-2 py-1.5 text-sm"
+                      value={f.name}
+                      onChange={(e) => upFlat(i, "name", e.target.value)}
+                      data-testid={`snow-flat-name-${i}`}
+                    />
+                    {flats.length > 1 && (
+                      <button onClick={() => delFlat(i)} className="text-muted-foreground hover:text-destructive" data-testid={`snow-flat-del-${i}`}>
+                        <X size={14} />
+                      </button>
+                    )}
+                  </div>
+                  <div className="grid grid-cols-2 gap-2">
+                    <SnowNum compact label="Price today (₹)" value={f.price_today} onChange={(v) => upFlat(i, "price_today", v)} tid={`snow-flat-price-${i}`} />
+                    <SnowNum compact label="Rent today (₹/mo)" value={f.monthly_rent_today} onChange={(v) => upFlat(i, "monthly_rent_today", v)} tid={`snow-flat-rent-${i}`} />
+                    <SnowNum compact label="DP %" value={f.down_payment_pct} onChange={(v) => upFlat(i, "down_payment_pct", v)} step="1" tid={`snow-flat-dp-${i}`} />
+                    <label className="block text-xs">
+                      <span className="block mb-1 text-muted-foreground">Buy in month (blank = auto)</span>
+                      <input
+                        type="number"
+                        className="input-dark w-full px-2 py-1.5 text-sm"
+                        value={f.desired_buy_month}
+                        onChange={(e) => upFlat(i, "desired_buy_month", e.target.value)}
+                        placeholder="auto"
+                        data-testid={`snow-flat-month-${i}`}
+                      />
+                    </label>
+                  </div>
+                  <label className="flex items-center gap-2 text-xs">
+                    <input
+                      type="checkbox"
+                      checked={f.is_under_construction}
+                      onChange={(e) => upFlat(i, "is_under_construction", e.target.checked)}
+                      data-testid={`snow-flat-uc-${i}`}
+                    />
+                    <span>Under construction</span>
+                    {f.is_under_construction && (
+                      <>
+                        <span className="text-muted-foreground ml-2">Possession in</span>
+                        <input
+                          type="number"
+                          className="input-dark w-16 px-2 py-1 text-xs"
+                          value={f.construction_months}
+                          onChange={(e) => upFlat(i, "construction_months", Number(e.target.value || 0))}
+                          data-testid={`snow-flat-cm-${i}`}
+                        />
+                        <span className="text-muted-foreground">months</span>
+                      </>
+                    )}
+                  </label>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div className="flex gap-3">
+            <button onClick={calc} disabled={loading} className="btn-primary px-6 py-3 text-sm flex-1" data-testid="snow-calc">
+              {loading ? "Simulating…" : "Run simulation"}
+            </button>
+            {res && (
+              <button onClick={share} disabled={sharing} className="btn-secondary px-5 py-3 text-sm" data-testid="snow-share">
+                {sharing ? "…" : "Share"}
+              </button>
+            )}
+          </div>
+          {shareUrl && (
+            <div className="card-flat p-3 flex items-center gap-3 text-xs" data-testid="snow-share-result">
+              <code className="truncate flex-1">{shareUrl}</code>
+              <button
+                onClick={async () => {
+                  try { await navigator.clipboard?.writeText(shareUrl); toast.success("Copied"); }
+                  catch { toast.error("Please select the URL manually"); }
+                }}
+                className="underline text-[hsl(var(--secondary))]"
+                data-testid="snow-share-copy"
+              >
+                Copy
+              </button>
+            </div>
           )}
         </div>
 
-        <button onClick={calc} disabled={loading} className="btn-primary px-6 py-3 text-sm mt-6" data-testid="odcf-calculate">
-          {loading ? "Crunching…" : "Calculate"}
-        </button>
-        {res && (
-          <button onClick={share} disabled={sharing} className="ml-3 btn-secondary px-5 py-3 text-sm mt-6" data-testid="odcf-share">
-            {sharing ? "Creating link…" : "Share this analysis"}
-          </button>
-        )}
-        {shareUrl && (
-          <div className="mt-5 card-flat p-4 flex items-center gap-3 text-sm" data-testid="odcf-share-result">
-            <span className="text-muted-foreground">Public link</span>
-            <code className="text-xs truncate flex-1">{shareUrl}</code>
-            <button
-              onClick={async () => {
-                try {
-                  await navigator.clipboard?.writeText(shareUrl);
-                  toast.success("Link copied");
-                } catch {
-                  toast.error("Couldn't copy — please select the URL manually");
-                }
-              }}
-              className="underline text-[hsl(var(--secondary))]"
-              data-testid="odcf-share-copy"
-            >
-              Copy
-            </button>
-          </div>
-        )}
-      </div>
-
-      <div className="space-y-6">
-        {!res ? (
-          <div className="card-flat p-10 text-center text-muted-foreground" data-testid="odcf-empty">
-            Enter your numbers → see the exact OD balance + top-ups needed to keep this rental always cashflow-positive.
-          </div>
-        ) : (
-          <>
-            <div className="card-flat p-6" data-testid="odcf-result">
-              <div className="eyebrow mb-2">XIRR on down-payment</div>
-              <div className="num-metric text-5xl" data-testid="odcf-xirr">{res.xirr_pct}%</div>
-              <div className="text-sm text-muted-foreground mt-2">Over {form.analysis_years} years — includes interest saved via OD, net cashflow, and property exit value.</div>
+        <div className="space-y-6">
+          {!res ? (
+            <div className="card-flat p-10 text-center text-muted-foreground" data-testid="snow-empty">
+              Set your OD pot, surplus, and a few target flats → see exactly which month each flat gets bought and when the pot starts paying its own EMIs.
             </div>
+          ) : (
+            <>
+              <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+                <SnowKpi label="XIRR on down-payments" value={`${res.xirr_pct}%`} big testid="snow-xirr" />
+                <SnowKpi label="Flats acquired" value={`${res.total_purchases} / ${res.total_purchases + res.unpurchased_count}`} testid="snow-bought" />
+                <SnowKpi
+                  label="Operating CF-positive"
+                  value={res.first_operating_cf_positive_month ? `Month ${res.first_operating_cf_positive_month}` : "Not yet"}
+                  tone={res.first_operating_cf_positive_month ? "secondary" : "destructive"}
+                  testid="snow-first-cf"
+                />
+                <SnowKpi
+                  label="Cumulative CF-positive"
+                  value={res.first_cumulative_cf_positive_month ? `Month ${res.first_cumulative_cf_positive_month}` : "Not yet"}
+                  tone={res.first_cumulative_cf_positive_month ? "secondary" : "destructive"}
+                />
+              </div>
 
-            <div className="grid grid-cols-2 gap-3">
-              <Kpi label="Down payment" value={`₹${Number(res.down_payment).toLocaleString("en-IN")}`} />
-              <Kpi label="Loan" value={`₹${Number(res.loan_amount).toLocaleString("en-IN")}`} />
-              <Kpi label="Post-possession EMI" value={`₹${Number(res.emi_post_possession).toLocaleString("en-IN")}`} />
-              <Kpi label="Min OD for CF-positive" value={`₹${Number(res.min_od_balance_for_cf_positive).toLocaleString("en-IN")}`} testid="odcf-min-od" />
-              <Kpi label="Total interest saved" value={`₹${Number(res.total_interest_saved_via_od).toLocaleString("en-IN")}`} tone="secondary" />
-              <Kpi label="Avg monthly CF (post-possession)" value={`₹${Number(res.avg_monthly_cashflow_post_possession).toLocaleString("en-IN")}`} tone={res.avg_monthly_cashflow_post_possession >= 0 ? "secondary" : "destructive"} />
-            </div>
+              <div className="grid grid-cols-2 lg:grid-cols-3 gap-3">
+                <SnowKpi label="Terminal net worth" value={`₹${Number(res.terminal_net_worth).toLocaleString("en-IN")}`} tone="secondary" />
+                <SnowKpi label="Terminal OD balance" value={`₹${Number(res.terminal_od_balance).toLocaleString("en-IN")}`} />
+                <SnowKpi label="Terminal loan balance" value={`₹${Number(res.terminal_loan_balance).toLocaleString("en-IN")}`} />
+              </div>
 
-            <div className="card-flat p-6">
-              <div className="eyebrow mb-3">Narrative</div>
-              <ul className="space-y-2.5" data-testid="odcf-narrative">
-                {res.narrative.map((n, i) => (
-                  <li key={`${n.slice(0, 24)}-${i}`} className="flex gap-3 text-sm">
-                    <span className="text-[hsl(var(--secondary))]">▸</span>
-                    <span>{n}</span>
-                  </li>
-                ))}
-              </ul>
-            </div>
+              {chartData.length > 0 && (
+                <div className="card-flat p-6">
+                  <div className="eyebrow mb-3">OD pot vs loan balance vs cumulative CF</div>
+                  <div style={{ width: "100%", height: 340 }}>
+                    <ResponsiveContainer>
+                      <LineChart data={chartData} margin={{ left: 10, right: 20, top: 10, bottom: 10 }}>
+                        <CartesianGrid stroke="hsl(var(--border))" strokeDasharray="2 4" />
+                        <XAxis dataKey="month" stroke="hsl(var(--muted-foreground))" />
+                        <YAxis stroke="hsl(var(--muted-foreground))" tickFormatter={(v) => `₹${(v / 100000).toFixed(0)}L`} />
+                        <Tooltip formatter={(v) => `₹${Number(v).toLocaleString("en-IN")}`} contentStyle={{ background: "hsl(var(--card))", border: "1px solid hsl(var(--border))" }} />
+                        <Legend />
+                        <Line type="monotone" dataKey="OD pot" stroke="#B89B72" strokeWidth={2} dot={false} />
+                        <Line type="monotone" dataKey="Loan balance" stroke="#C85A32" strokeWidth={2} dot={false} />
+                        <Line type="monotone" dataKey="Cumulative CF" stroke="#5E7C60" strokeWidth={2} dot={false} strokeDasharray="4 4" />
+                      </LineChart>
+                    </ResponsiveContainer>
+                  </div>
+                </div>
+              )}
 
-            {res.monthly_series?.length > 0 && (
+              {res.purchases.length > 0 && (
+                <div className="card-flat p-6">
+                  <div className="eyebrow mb-3">Purchase schedule</div>
+                  <table className="w-full text-sm" data-testid="snow-purchases">
+                    <thead>
+                      <tr className="border-b hairline text-muted-foreground uppercase text-[10px] tracking-wider">
+                        <th className="text-left py-2">Flat</th>
+                        <th className="text-right py-2">Month</th>
+                        <th className="text-right py-2">Price</th>
+                        <th className="text-right py-2">DP</th>
+                        <th className="text-right py-2">Loan</th>
+                        <th className="text-right py-2">EMI</th>
+                        <th className="text-right py-2">Possession</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {res.purchases.map((p) => (
+                        <tr key={`${p.name}-${p.month}`} className="border-b hairline last:border-0">
+                          <td className="py-2">{p.name}{p.is_uc ? " (UC)" : ""}</td>
+                          <td className="py-2 text-right">{p.month}</td>
+                          <td className="py-2 text-right">₹{Number(p.price).toLocaleString("en-IN", { maximumFractionDigits: 0 })}</td>
+                          <td className="py-2 text-right">₹{Number(p.dp).toLocaleString("en-IN", { maximumFractionDigits: 0 })}</td>
+                          <td className="py-2 text-right">₹{Number(p.loan).toLocaleString("en-IN", { maximumFractionDigits: 0 })}</td>
+                          <td className="py-2 text-right">₹{Number(p.emi).toLocaleString("en-IN", { maximumFractionDigits: 0 })}</td>
+                          <td className="py-2 text-right">{p.possession_month}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+
+              {res.narrative?.length > 0 && (
+                <div className="card-flat p-6">
+                  <div className="eyebrow mb-3">Narrative</div>
+                  <ul className="space-y-2.5" data-testid="snow-narrative">
+                    {res.narrative.map((n, i) => (
+                      <li key={`${n.slice(0, 24)}-${i}`} className="flex gap-3 text-sm">
+                        <span className="text-[hsl(var(--secondary))]">▸</span>
+                        <span>{n}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
               <div className="card-flat p-6">
-                <div className="eyebrow mb-3">Monthly trajectory (every 6 months)</div>
-                <table className="w-full text-xs" data-testid="odcf-series">
+                <div className="flex items-center justify-between mb-3">
+                  <div className="eyebrow">{showAllMonths ? "Every 3 months" : "Yearly snapshots"}</div>
+                  <button onClick={() => setShowAllMonths(!showAllMonths)} className="text-xs underline text-[hsl(var(--secondary))]" data-testid="snow-toggle-view">
+                    {showAllMonths ? "Show yearly" : "Show 3-monthly"}
+                  </button>
+                </div>
+                <table className="w-full text-xs" data-testid="snow-series">
                   <thead>
                     <tr className="border-b hairline text-muted-foreground uppercase text-[9px] tracking-wider">
                       <th className="text-left py-2">Month</th>
+                      <th className="text-right py-2">OD pot</th>
                       <th className="text-right py-2">Loan bal</th>
-                      <th className="text-right py-2">OD bal</th>
-                      <th className="text-right py-2">Int saved</th>
                       <th className="text-right py-2">Rent</th>
-                      <th className="text-right py-2">EMI eff.</th>
-                      <th className="text-right py-2">Net CF</th>
+                      <th className="text-right py-2">EMI</th>
+                      <th className="text-right py-2">Op. CF</th>
+                      <th className="text-right py-2">Cumul CF</th>
+                      <th className="text-right py-2">Flats</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {res.monthly_series.map((r) => (
-                      <tr key={r.month} className={`border-b hairline last:border-0 ${r.is_construction ? "opacity-60" : ""}`}>
-                        <td className="py-1.5">{r.month}{r.is_construction ? " 🏗" : ""}</td>
-                        <td className="py-1.5 text-right">₹{Number(r.loan_balance).toLocaleString("en-IN")}</td>
-                        <td className="py-1.5 text-right">₹{Number(r.od_balance).toLocaleString("en-IN")}</td>
-                        <td className="py-1.5 text-right text-[hsl(var(--secondary))]">₹{Number(r.interest_saved).toFixed(0)}</td>
-                        <td className="py-1.5 text-right">₹{Number(r.rent).toLocaleString("en-IN")}</td>
-                        <td className="py-1.5 text-right">₹{Number(r.emi_effective).toLocaleString("en-IN")}</td>
-                        <td className={`py-1.5 text-right ${r.net_cashflow >= 0 ? "text-[hsl(var(--secondary))]" : "text-destructive"}`}>
-                          ₹{Number(r.net_cashflow).toLocaleString("en-IN")}
+                    {(showAllMonths ? res.monthly_series : res.yearly_snapshots).map((r) => (
+                      <tr key={r.month} className="border-b hairline last:border-0">
+                        <td className="py-1.5">{r.month}</td>
+                        <td className="py-1.5 text-right">₹{Number(r.od_balance).toLocaleString("en-IN", { maximumFractionDigits: 0 })}</td>
+                        <td className="py-1.5 text-right">₹{Number(r.total_loan_balance).toLocaleString("en-IN", { maximumFractionDigits: 0 })}</td>
+                        <td className="py-1.5 text-right">₹{Number(r.rent).toLocaleString("en-IN", { maximumFractionDigits: 0 })}</td>
+                        <td className="py-1.5 text-right">₹{Number(r.emi + r.pre_emi).toLocaleString("en-IN", { maximumFractionDigits: 0 })}</td>
+                        <td className={`py-1.5 text-right ${r.operating_cf >= 0 ? "text-[hsl(var(--secondary))]" : "text-destructive"}`}>
+                          ₹{Number(r.operating_cf).toLocaleString("en-IN", { maximumFractionDigits: 0 })}
                         </td>
+                        <td className={`py-1.5 text-right ${r.cumulative_operating_cf >= 0 ? "text-[hsl(var(--secondary))]" : "text-destructive"}`}>
+                          ₹{Number(r.cumulative_operating_cf).toLocaleString("en-IN", { maximumFractionDigits: 0 })}
+                        </td>
+                        <td className="py-1.5 text-right">{r.active_flats}</td>
                       </tr>
                     ))}
                   </tbody>
                 </table>
               </div>
-            )}
-          </>
-        )}
+            </>
+          )}
+        </div>
       </div>
     </div>
   );
 }
 
-function NumF({ label, value, onChange, tid }) {
+function SnowNum({ label, value, onChange, tid, step, compact }) {
   return (
-    <label className="block">
-      <span className="eyebrow block mb-1.5">{label}</span>
+    <label className={`block ${compact ? "text-xs" : ""}`}>
+      <span className={`${compact ? "text-[10px] text-muted-foreground" : "eyebrow"} block mb-1`}>{label}</span>
       <input
         type="number"
-        className="input-dark w-full px-3 py-2"
+        step={step || "1"}
+        className={`input-dark w-full ${compact ? "px-2 py-1.5 text-sm" : "px-3 py-2"}`}
         value={value}
         onChange={(e) => onChange(Number(e.target.value || 0))}
         data-testid={tid}
@@ -1723,15 +1871,18 @@ function NumF({ label, value, onChange, tid }) {
   );
 }
 
-function Kpi({ label, value, tone, testid }) {
+function SnowKpi({ label, value, tone, big, testid }) {
   const toneClass = tone === "secondary" ? "text-[hsl(var(--secondary))]" : tone === "destructive" ? "text-destructive" : "text-foreground";
+  const sizeClass = big ? "num-metric text-3xl" : "num-metric text-base";
   return (
     <div className="card-flat p-4" data-testid={testid}>
       <div className="text-[10px] text-muted-foreground mb-1 uppercase tracking-wider">{label}</div>
-      <div className={`num-metric text-lg ${toneClass}`}>{value}</div>
+      <div className={`${sizeClass} ${toneClass}`}>{value}</div>
     </div>
   );
 }
+
+
 
 function XirrCalc() {
   const [rows, setRows] = useState([

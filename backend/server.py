@@ -1332,6 +1332,10 @@ async def list_shares(user: dict = Depends(get_current_user)):
             res = d.get("result") or {}
             item["xirr_pct"] = res.get("xirr_pct")
             item["builder_plan"] = (d.get("inputs") or {}).get("builder_plan")
+        elif kind == "snowball":
+            res = d.get("result") or {}
+            item["xirr_pct"] = res.get("xirr_pct")
+            item["total_purchases"] = res.get("total_purchases")
         else:
             item["winner"] = d.get("winner", {}).get("name") if d.get("winner") else None
             item["num_properties"] = len(d.get("properties", []))
@@ -5465,6 +5469,249 @@ async def create_odcf_share(body: OdCashflowShareIn, user: dict = Depends(get_cu
     }
     await db.shares.insert_one(doc.copy())
     return {"share_id": share_id, "url": f"/share/{share_id}", "kind": "odcf"}
+
+
+# ============================================================
+# RENTAL SNOWBALL — multi-property OD-pot simulator
+# OD pot accumulates: salary surplus + rents - EMIs - pre-EMIs
+# Withdraws DP to buy each new flat (RTM or UC) when affordable.
+# Tracks when the portfolio turns cashflow-positive. XIRR on DPs.
+# ============================================================
+
+class TargetFlat(BaseModel):
+    name: str
+    price_today: float                 # ₹ at month 0
+    down_payment_pct: float = 20       # % of purchase price
+    monthly_rent_today: float          # ₹ rent if bought today (escalated if bought later)
+    is_under_construction: bool = False
+    construction_months: int = 0       # how long construction takes if UC (else 0)
+    desired_buy_month: Optional[int] = None  # if set, forces buy on that month (even if OD short)
+
+
+class RentalSnowballRequest(BaseModel):
+    starting_od_balance: float = 0
+    monthly_surplus: float = 50000     # salary savings added to OD each month
+    loan_rate_pct: float = 8.5
+    loan_tenure_years: int = 20
+    rent_escalation_pct: float = 5.0   # % per annum on each flat's rent
+    appreciation_pct: float = 7.0      # % per annum on flat price & valuation
+    analysis_years: int = 15
+    target_flats: List[TargetFlat]
+
+
+def _pick_purchase_this_month(pending: list, month: int, od_balance: float,
+                              appreciation_pct: float) -> Optional[dict]:
+    """Returns the target flat to buy this month, or None. Pops from pending."""
+    appr_m = (1 + appreciation_pct / 100) ** (month / 12)
+    for i, tgt in enumerate(pending):
+        forced = tgt.desired_buy_month == month
+        future_price = tgt.price_today * appr_m
+        required_dp = future_price * (tgt.down_payment_pct / 100)
+        can_afford = od_balance >= required_dp
+        if forced or (tgt.desired_buy_month is None and can_afford):
+            picked = pending.pop(i)
+            return {
+                "name": picked.name,
+                "purchase_month": month,
+                "price": future_price,
+                "dp": required_dp,
+                "loan": future_price - required_dp,
+                "loan_balance": future_price - required_dp,
+                "is_under_construction": picked.is_under_construction,
+                "construction_remaining": picked.construction_months if picked.is_under_construction else 0,
+                "possession_month": month + (picked.construction_months if picked.is_under_construction else 0),
+                "rent_base": picked.monthly_rent_today * ((1 + 0.01 * 0) ** 0),  # base at today's terms
+                "monthly_rent_today": picked.monthly_rent_today,
+            }
+    return None
+
+
+def _active_flat_cashflow(flat: dict, month: int, r_m: float,
+                          emi_for_flat: float, rent_escalation_pct: float) -> tuple:
+    """Returns (rent_in, emi_out, pre_emi_out, principal_paid, interest_charged).
+    Called AFTER the OD offset has reduced effective interest."""
+    if flat["construction_remaining"] > 0:
+        # Pre-EMI = interest-only on current loan_balance. No OD offset here (keep simple).
+        pre_emi = flat["loan_balance"] * r_m
+        flat["construction_remaining"] -= 1
+        return (0.0, 0.0, pre_emi, 0.0, pre_emi)
+    # Post-possession
+    months_since_possession = month - flat["possession_month"]
+    rent = flat["monthly_rent_today"] * ((1 + rent_escalation_pct / 100) ** (months_since_possession / 12))
+    interest_charged = flat["loan_balance"] * r_m
+    principal_paid = max(emi_for_flat - interest_charged, 0)
+    flat["loan_balance"] = max(flat["loan_balance"] - principal_paid, 0)
+    return (rent, emi_for_flat, 0.0, principal_paid, interest_charged)
+
+
+@api_router.post("/calc/rental-snowball")
+async def rental_snowball(body: RentalSnowballRequest):
+    if not body.target_flats:
+        raise HTTPException(400, "Add at least one target flat")
+    months_total = body.analysis_years * 12
+    r_m = (body.loan_rate_pct / 100) / 12
+
+    od_balance = body.starting_od_balance
+    pending = list(body.target_flats)
+    active: list[dict] = []
+    purchases: list[dict] = []
+    cashflow_cfs: list[tuple[int, float]] = []  # (day, amount) for XIRR
+    monthly_rows: list[dict] = []
+
+    first_operating_cf_pos_month: Optional[int] = None
+    first_cumulative_cf_pos_month: Optional[int] = None
+    cumulative_operating_cf = 0.0
+
+    # Day-0 cashflow: starting OD seen as invested capital
+    if body.starting_od_balance > 0:
+        cashflow_cfs.append((0, -body.starting_od_balance))
+
+    for m in range(1, months_total + 1):
+        # 1. Inject monthly surplus first
+        od_balance += body.monthly_surplus
+
+        # 2. Try to purchase (up to one per month)
+        purchased = _pick_purchase_this_month(pending, m, od_balance, body.appreciation_pct)
+        if purchased:
+            # Compute EMI on the loan using tenure years remaining at purchase
+            purchased["emi"] = _emi(purchased["loan"], body.loan_rate_pct, body.loan_tenure_years) if purchased["loan"] > 0 else 0
+            od_balance -= purchased["dp"]
+            cashflow_cfs.append((m * 30, -purchased["dp"]))
+            purchases.append({
+                "name": purchased["name"],
+                "month": m,
+                "price": round(purchased["price"], 2),
+                "dp": round(purchased["dp"], 2),
+                "loan": round(purchased["loan"], 2),
+                "emi": round(purchased["emi"], 2),
+                "is_uc": purchased["is_under_construction"],
+                "possession_month": purchased["possession_month"],
+            })
+            active.append(purchased)
+
+        # 3. For each active flat: collect rent, pay EMI / pre-EMI
+        total_rent = 0.0
+        total_emi = 0.0
+        total_pre_emi = 0.0
+        total_interest_charged = 0.0
+        for flat in active:
+            rent, emi, pre_emi, _, interest = _active_flat_cashflow(
+                flat, m, r_m, flat.get("emi", 0), body.rent_escalation_pct
+            )
+            total_rent += rent
+            total_emi += emi
+            total_pre_emi += pre_emi
+            total_interest_charged += interest
+
+        # 4. OD interest-offset benefit (informational): money saved because OD sat against aggregate loan
+        total_loan = sum(f["loan_balance"] for f in active)
+        offset = min(od_balance, total_loan) if total_loan > 0 else 0
+        interest_saved = offset * r_m
+
+        # 5. OD pot update
+        operating_cf = total_rent - total_emi - total_pre_emi
+        od_balance += operating_cf
+        cumulative_operating_cf += operating_cf
+
+        # 6. First CF-positive detection
+        if first_operating_cf_pos_month is None and operating_cf > 0 and any(not f["is_under_construction"] or f["construction_remaining"] <= 0 for f in active):
+            first_operating_cf_pos_month = m
+        if first_cumulative_cf_pos_month is None and cumulative_operating_cf > 0:
+            first_cumulative_cf_pos_month = m
+
+        monthly_rows.append({
+            "month": m,
+            "od_balance": round(od_balance, 2),
+            "total_loan_balance": round(total_loan, 2),
+            "rent": round(total_rent, 2),
+            "emi": round(total_emi, 2),
+            "pre_emi": round(total_pre_emi, 2),
+            "interest_saved": round(interest_saved, 2),
+            "operating_cf": round(operating_cf, 2),
+            "operating_cf_with_surplus": round(operating_cf + body.monthly_surplus, 2),
+            "cumulative_operating_cf": round(cumulative_operating_cf, 2),
+            "active_flats": len(active),
+        })
+
+    # 7. Terminal valuation for XIRR
+    appr_final = (1 + body.appreciation_pct / 100) ** body.analysis_years
+    portfolio_value = sum((p["price"] * appr_final / ((1 + body.appreciation_pct / 100) ** (p["month"] / 12))) for p in purchases)
+    total_loan_final = sum(f["loan_balance"] for f in active)
+    terminal_value = portfolio_value - total_loan_final + od_balance
+    if cashflow_cfs:
+        cashflow_cfs.append((months_total * 30, terminal_value))
+        try:
+            xirr_pct = _xirr(cashflow_cfs) * 100
+        except Exception:
+            xirr_pct = 0.0
+    else:
+        xirr_pct = 0.0
+
+    narrative = _snowball_narrative(body, purchases, first_operating_cf_pos_month,
+                                     first_cumulative_cf_pos_month, xirr_pct, terminal_value,
+                                     od_balance, total_loan_final)
+
+    return {
+        "xirr_pct": round(xirr_pct, 2),
+        "first_operating_cf_positive_month": first_operating_cf_pos_month,
+        "first_cumulative_cf_positive_month": first_cumulative_cf_pos_month,
+        "terminal_portfolio_value": round(portfolio_value, 2),
+        "terminal_loan_balance": round(total_loan_final, 2),
+        "terminal_od_balance": round(od_balance, 2),
+        "terminal_net_worth": round(terminal_value, 2),
+        "total_purchases": len(purchases),
+        "unpurchased_count": len(pending),
+        "purchases": purchases,
+        "monthly_series": monthly_rows[::3],   # every 3 months for chart density
+        "yearly_snapshots": [monthly_rows[i * 12 - 1] for i in range(1, body.analysis_years + 1) if i * 12 - 1 < len(monthly_rows)],
+        "narrative": narrative,
+    }
+
+
+def _snowball_narrative(body, purchases, op_cf_m, cum_cf_m, xirr, terminal, od, loan):
+    lines = []
+    n = len(purchases)
+    if n == 0:
+        lines.append("No flats could be purchased within your analysis window — increase monthly surplus or starting OD balance.")
+        return lines
+    lines.append(f"Acquired {n} of {len(body.target_flats)} target flats over {body.analysis_years} years.")
+    for p in purchases[:5]:
+        yr = p["month"] / 12
+        lines.append(f"{p['name']}: bought in month {p['month']} (year {yr:.1f}) — price ₹{int(p['price']):,}, DP ₹{int(p['dp']):,}, EMI ₹{int(p['emi']):,}.")
+    if op_cf_m:
+        lines.append(f"Portfolio turned operating-cashflow-positive in month {op_cf_m} (rents > EMIs + pre-EMIs).")
+    else:
+        lines.append("Portfolio is NOT yet operating-cashflow-positive within the horizon — rents haven't overtaken EMIs.")
+    if cum_cf_m:
+        lines.append(f"Cumulative cashflow crossed zero in month {cum_cf_m} (full recovery of operating losses).")
+    lines.append(f"Terminal net worth: ₹{int(terminal):,} (property ₹{int(terminal + loan - od):,} − loan ₹{int(loan):,} + OD ₹{int(od):,}).")
+    lines.append(f"XIRR on your down-payments over {body.analysis_years} years: {xirr:.2f}% p.a.")
+    return lines
+
+
+class RentalSnowballShareIn(BaseModel):
+    inputs: RentalSnowballRequest
+    title: Optional[str] = None
+
+
+@api_router.post("/calc/rental-snowball/share")
+async def create_snowball_share(body: RentalSnowballShareIn, user: dict = Depends(get_current_user)):
+    result = await rental_snowball(body.inputs)
+    share_id = secrets.token_urlsafe(10)
+    doc = {
+        "share_id": share_id,
+        "kind": "snowball",
+        "user_id": user["id"],
+        "owner_name": user.get("name", ""),
+        "title": (body.title or "Rental snowball plan")[:120],
+        "inputs": body.inputs.model_dump(),
+        "result": result,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.shares.insert_one(doc.copy())
+    return {"share_id": share_id, "url": f"/share/{share_id}", "kind": "snowball"}
+
+
 
 
 def _od_narrative(body, dp, emi, rent, min_od, interest_saved, xirr, first_cf_pos_m):

@@ -1,0 +1,47 @@
+{
+  "summary": "Iteration 18 — End-to-end verification of the new Rental Snowball calculator that replaced the old single-flat OD-Cashflow simulator. Backend: 11/11 pytest passed (POST /api/calc/rental-snowball anonymous default scenario returns all 13 fields with 2/3 flats acquired, xirr=16.56% well within 0-50% band, terminal_net_worth=₹4.39 Cr; empty target_flats → 400; desired_buy_month forces purchase even when OD pot is empty (terminal_od_balance went negative); UC flat correctly pays pre_emi only during construction (months 1-12 in series have pre_emi>0 & emi=0) and switches to EMI+rent post-possession (months >=36 have emi>0 & rent>0); POST /api/calc/rental-snowball/share anon → 401, demo → 200 with share_id+url+kind=snowball; GET /api/shares/{id} for snowball returns kind+title+inputs+result(purchases+monthly_series) with NO user_id leak; GET /api/shares list includes snowball entries with xirr_pct + total_purchases; unknown share id → 404; owner DELETE 200 then GET 404). Frontend: full UI flow worked — demo-login → /app/calculators → tab-odcf labelled 'Rental Snowball (OD)' → snowball-calc root + 3 default flats (snow-flat-0/1/2) pre-filled → snow-calc → snow-xirr='16.56%', snow-bought='2 / 3', snow-first-cf='Not yet', snow-purchases 2 rows, snow-narrative 6 bullets, snow-series 15 yearly rows, 4 recharts SVG charts (the line chart with OD pot + Loan balance + Cumulative CF visually verified in screenshot). snow-toggle-view flipped 15→60 rows (yearly→3-monthly). snow-add-flat appended snow-flat-3, snow-flat-del-3 removed it. snow-flat-uc-1 checkbox toggle hides/shows snow-flat-cm-1 conditionally. snow-share → snow-share-result card with full URL + snow-share-copy button rendered. Public share URL opened in fresh unauthenticated browser context renders share-snowball root, share-snowball-title='TEST_iter18_frontend_share', share-snowball-xirr='16.56%' (with %), share-snowball-purchases 2 rows, share-snowball-narrative 6 bullets, 4 recharts charts (chart visually rendered correctly with X-axis 1..178, Y-axis ₹-75L..₹225L, all 3 legend items), share-snowball-cta + share-snowball-footer-cta both visible, NO 'user_id' string in HTML. REGRESSION: pre-existing odcf share WxLW_VGj1EJiDA still renders share-odcf root (kind dispatcher works). All 14 other Calculator tabs (wealth, car, emi, rentbuy, invest, cashflow, rentcf, resale, optimizer, builder, uc, rtmuc, prepay, xirr) clicked through with ZERO new console errors.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {
+        "component": "RentalSnowball / snow-share-result",
+        "issue": "The share URL inside snow-share-result is rendered in a <code> element (Calculators.jsx L1700), not an <input>. This is intentional (truncated display) and the snow-share-copy button copies via state variable shareUrl, not a DOM read. Cosmetic: users cannot triple-click-select the URL the way they would on an input. Low-priority polish only.",
+        "selector": "[data-testid=\"snow-share-result\"] code",
+        "priority": "LOW"
+      }
+    ],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration18.py",
+    "/app/test_reports/pytest/iteration_18.xml"
+  ],
+  "action_items": [
+    "OPTIONAL polish: in snow-share-copy onClick (Calculators.jsx L1703-1706), the try/catch already exists — good. Same recommendation as iter 17 odcf-share-copy: the toast 'Copied' currently fires AFTER the await resolves which is correct; no change needed. ✅",
+    "OPTIONAL polish: snow-share-result currently uses <code> for URL. Consider switching to a readonly <input> so users can triple-click-select before clicking Copy (some users prefer manual selection). Cosmetic only."
+  ],
+  "critical_code_review_comments": [
+    "POST /api/calc/rental-snowball (server.py L5547-5668): clean separation of concerns — _pick_purchase_this_month + _active_flat_cashflow + _snowball_narrative are isolated helpers. XIRR uses cashflow tuples (day, amount) with day-0 starting OD as -ve and terminal valuation as +ve — mathematically sound. ✅",
+    "_pick_purchase_this_month (L5502-5526): correctly handles forced purchase via desired_buy_month — even if can_afford is false, the flat is popped and OD goes negative. Verified via test_desired_buy_month_forces_purchase (terminal_od_balance < 0). ✅",
+    "_active_flat_cashflow (L5529-5544): pre-EMI = loan_balance * r_m during construction, switches to full EMI + rent post-possession. Decrementing construction_remaining inside the function is a side-effect on the input dict — works because `active` list holds the same dict refs, but it's a mild anti-pattern; consider returning the new state or marking the function as mutating in docstring. Minor.",
+    "Terminal valuation (L5637-5640): portfolio_value normalises each purchase price back to month-0 then re-appreciates to terminal — algebraically equivalent to `price_today * appr_final` per flat, but written verbosely. Works correctly. ✅",
+    "monthly_series sliced [::3] (L5665): chart density choice is fine (60 points over 15y). yearly_snapshots picks month*12-1. ✅",
+    "POST /api/calc/rental-snowball/share (L5697-5712): identical pattern to odcf share — auth required, server-recomputes result from inputs (no client-trust), kind='snowball', title trimmed to 120. Reuses doc.copy() to avoid mongo ObjectId mutation on insert. ✅",
+    "list_shares snowball branch (L1335-1338): exposes xirr_pct + total_purchases — matches test expectations. ✅",
+    "Frontend RentalSnowball component (Calculators.jsx L1524-1850 approx): well-structured. SnowNum + SnowKpi + SnowFlatRow are inline helpers — fine for a 300-line component. tab id remains 'odcf' (URL/testid continuity), only label changed — backwards-compatible routing. ✅",
+    "SharedReport.jsx dispatcher (L75-77): early-return for kind==='snowball' before the existing odcf branch (L71-73) and comparison default — no regression to existing share types. Verified via WxLW_VGj1EJiDA still rendering share-odcf. ✅",
+    "SnowballSharedReport (SharedReport.jsx L364-490): renders title, xirr, terminal KPIs, line chart, purchases table, narrative — comprehensive. CTA + footer-CTA both present. ✅"
+  ],
+  "updated_files": ["/app/backend/tests/test_iteration18.py"],
+  "success_rate": {"backend": "100% (11/11)", "frontend": "100% on critical path (login→calc→share→public-render→regression)"},
+  "test_credentials": "demo via POST /api/auth/demo-login ; admin@estima.com / Admin@123",
+  "seed_data_creation": "Test creates 2 TEST_-prefixed snowball shares per run: 'TEST_snowball_iter18' (deleted in test_cleanup_owner_delete) and 'TEST_iter18_frontend_share' (created via curl for frontend share-page test, share_id=-2GvmFjIAzi8Eg, NOT auto-deleted — left for manual inspection if needed; safe to delete via DELETE /api/shares/-2GvmFjIAzi8Eg as demo user).",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Iteration 18 (Rental Snowball replacing OD-Cashflow single-flat sim) fully verified end-to-end. Backend tests at /app/backend/tests/test_iteration18.py — 11 tests cover calc engine + share CRUD + odcf regression. Frontend testids confirmed working: snowball-calc, snow-calc, snow-share, snow-share-result, snow-share-copy, snow-xirr, snow-bought, snow-first-cf, snow-purchases, snow-narrative, snow-series, snow-toggle-view, snow-add-flat, snow-flat-{0..3}, snow-flat-name/price/rent/dp/month/uc/cm/del-{i}, share-snowball, share-snowball-title, share-snowball-xirr, share-snowball-purchases, share-snowball-narrative, share-snowball-cta, share-snowball-footer-cta. Pre-existing odcf share WxLW_VGj1EJiDA still renders correctly via SharedReport dispatcher. The 401 console errors on initial pre-login /api/auth/me probe and on the public share page (auth/me probe) are pre-existing benign — same as iter 17. Frontend share URL (snow-share-result) uses <code> not <input> — if you need to read the URL programmatically, use page.locator('[data-testid=\"snow-share-result\"] code').inner_text() rather than input_value().",
+  "rca of the issue": "No bugs found. Earlier playwright test failure on 'Locator.input_value' for snow-share-result was a TEST-SCRIPT issue (we assumed <input>, but the component uses <code>) — not a product bug. Confirmed via grep on Calculators.jsx L1700: `<code className=\"truncate flex-1\">{shareUrl}</code>`."
+}

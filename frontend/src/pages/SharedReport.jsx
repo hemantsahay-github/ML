@@ -72,6 +72,10 @@ export default function SharedReport() {
     return <OdcfSharedReport data={data} />;
   }
 
+  if (data.kind === "snowball") {
+    return <SnowballSharedReport data={data} />;
+  }
+
   const radarData = ["location", "amenities", "safety", "commute", "resale", "price_value"].map((axis) => {
     const entry = { axis: axis.replace("_", " ") };
     data.results.forEach((r) => {
@@ -352,6 +356,129 @@ function OdRow({ k, v }) {
     <div>
       <div className="text-[10px] uppercase tracking-wider text-muted-foreground">{k}</div>
       <div className="text-sm">{v}</div>
+    </div>
+  );
+}
+
+
+function SnowballSharedReport({ data }) {
+  const r = data.result || {};
+  const chart = (r.monthly_series || []).map((s) => ({
+    month: s.month,
+    "OD pot": Math.round(s.od_balance),
+    "Loan balance": Math.round(s.total_loan_balance),
+    "Cumulative CF": Math.round(s.cumulative_operating_cf),
+  }));
+  return (
+    <div className="min-h-screen bg-background text-foreground" data-testid="share-snowball">
+      <header className="border-b hairline">
+        <div className="max-w-5xl mx-auto px-6 py-5 flex items-center justify-between">
+          <Link to="/" className="flex items-center gap-2">
+            <div className="h-8 w-8 border hairline flex items-center justify-center">
+              <span className="font-serif text-xl leading-none">E</span>
+            </div>
+            <span className="font-serif text-2xl tracking-tight">Estima</span>
+          </Link>
+          <Link to="/register" className="btn-primary px-4 py-2 text-xs inline-flex items-center gap-1.5" data-testid="share-snowball-cta">
+            Run your own <ArrowRight size={12} weight="bold" />
+          </Link>
+        </div>
+      </header>
+
+      <div className="max-w-5xl mx-auto px-6 py-12">
+        <div className="eyebrow mb-3">Rental snowball plan</div>
+        <h1 className="font-serif text-5xl mb-4" data-testid="share-snowball-title">{data.title}</h1>
+        <div className="text-muted-foreground text-sm mb-12">
+          Prepared by {data.owner_name || "an Estima user"} · {new Date(data.created_at).toLocaleDateString("en-IN", { day: "numeric", month: "long", year: "numeric" })}
+        </div>
+
+        <div className="grid md:grid-cols-4 gap-5 mb-8">
+          <OdKpi label="XIRR on DPs" value={`${r.xirr_pct}%`} big testid="share-snowball-xirr" />
+          <OdKpi label="Flats acquired" value={`${r.total_purchases} / ${r.total_purchases + r.unpurchased_count}`} />
+          <OdKpi label="Op. CF-positive" value={r.first_operating_cf_positive_month ? `M${r.first_operating_cf_positive_month}` : "—"} tone={r.first_operating_cf_positive_month ? "secondary" : "destructive"} />
+          <OdKpi label="Cumulative CF-positive" value={r.first_cumulative_cf_positive_month ? `M${r.first_cumulative_cf_positive_month}` : "—"} tone={r.first_cumulative_cf_positive_month ? "secondary" : "destructive"} />
+        </div>
+
+        <div className="grid md:grid-cols-3 gap-5 mb-10">
+          <OdKpi label="Terminal net worth" value={inr(r.terminal_net_worth)} tone="secondary" />
+          <OdKpi label="Terminal OD pot" value={inr(r.terminal_od_balance)} />
+          <OdKpi label="Terminal loan" value={inr(r.terminal_loan_balance)} />
+        </div>
+
+        {chart.length > 0 && (
+          <div className="card-flat p-6 mb-10">
+            <div className="eyebrow mb-4">OD pot vs loan balance vs cumulative CF</div>
+            <div style={{ width: "100%", height: 340 }}>
+              <ResponsiveContainer>
+                <LineChart data={chart} margin={{ left: 10, right: 20, top: 10, bottom: 10 }}>
+                  <CartesianGrid stroke="hsl(var(--border))" strokeDasharray="2 4" />
+                  <XAxis dataKey="month" stroke="hsl(var(--muted-foreground))" />
+                  <YAxis stroke="hsl(var(--muted-foreground))" tickFormatter={(v) => `₹${(v / 100000).toFixed(0)}L`} />
+                  <Tooltip formatter={(v) => inr(v)} contentStyle={{ background: "hsl(var(--card))", border: "1px solid hsl(var(--border))" }} />
+                  <Legend />
+                  <Line type="monotone" dataKey="OD pot" stroke="#B89B72" strokeWidth={2} dot={false} />
+                  <Line type="monotone" dataKey="Loan balance" stroke="#C85A32" strokeWidth={2} dot={false} />
+                  <Line type="monotone" dataKey="Cumulative CF" stroke="#5E7C60" strokeWidth={2} dot={false} strokeDasharray="4 4" />
+                </LineChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+        )}
+
+        {r.purchases?.length > 0 && (
+          <div className="card-flat p-6 mb-10">
+            <div className="eyebrow mb-4">Purchase schedule</div>
+            <table className="w-full text-sm" data-testid="share-snowball-purchases">
+              <thead>
+                <tr className="border-b hairline text-muted-foreground uppercase text-[10px] tracking-wider">
+                  <th className="text-left py-2">Flat</th>
+                  <th className="text-right py-2">Month</th>
+                  <th className="text-right py-2">Price</th>
+                  <th className="text-right py-2">DP</th>
+                  <th className="text-right py-2">Loan</th>
+                  <th className="text-right py-2">EMI</th>
+                </tr>
+              </thead>
+              <tbody>
+                {r.purchases.map((p) => (
+                  <tr key={`${p.name}-${p.month}`} className="border-b hairline last:border-0">
+                    <td className="py-2">{p.name}{p.is_uc ? " (UC)" : ""}</td>
+                    <td className="py-2 text-right">{p.month}</td>
+                    <td className="py-2 text-right">{inr(p.price)}</td>
+                    <td className="py-2 text-right">{inr(p.dp)}</td>
+                    <td className="py-2 text-right">{inr(p.loan)}</td>
+                    <td className="py-2 text-right">{inr(p.emi)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+        {r.narrative?.length > 0 && (
+          <div className="card-flat p-8 mb-10">
+            <div className="eyebrow mb-4">Narrative</div>
+            <ul className="space-y-3" data-testid="share-snowball-narrative">
+              {r.narrative.map((n, i) => (
+                <li key={`${n.slice(0, 24)}-${i}`} className="flex gap-3 text-sm">
+                  <span className="text-[hsl(var(--secondary))]">▸</span>
+                  <span>{n}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+
+        <div className="text-center border-t hairline pt-16">
+          <div className="font-serif text-3xl mb-4">Build your own rental snowball.</div>
+          <p className="text-muted-foreground mb-8 max-w-lg mx-auto">
+            Estima is free. Model multi-flat acquisition plans and watch the month the portfolio self-funds.
+          </p>
+          <Link to="/register" className="btn-primary px-6 py-3 text-sm inline-flex items-center gap-2" data-testid="share-snowball-footer-cta">
+            Start free <ArrowRight size={14} weight="bold" />
+          </Link>
+        </div>
+      </div>
     </div>
   );
 }
