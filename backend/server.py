@@ -1319,17 +1319,24 @@ async def get_share(share_id: str):
 @api_router.get("/shares")
 async def list_shares(user: dict = Depends(get_current_user)):
     docs = await db.shares.find({"user_id": user["id"]}, {"_id": 0}).sort("created_at", -1).to_list(100)
-    # summarize
-    return [
-        {
+    out = []
+    for d in docs:
+        kind = d.get("kind", "comparison")
+        item = {
             "share_id": d["share_id"],
+            "kind": kind,
             "title": d.get("title"),
             "created_at": d.get("created_at"),
-            "winner": d.get("winner", {}).get("name") if d.get("winner") else None,
-            "num_properties": len(d.get("properties", [])),
         }
-        for d in docs
-    ]
+        if kind == "odcf":
+            res = d.get("result") or {}
+            item["xirr_pct"] = res.get("xirr_pct")
+            item["builder_plan"] = (d.get("inputs") or {}).get("builder_plan")
+        else:
+            item["winner"] = d.get("winner", {}).get("name") if d.get("winner") else None
+            item["num_properties"] = len(d.get("properties", []))
+        out.append(item)
+    return out
 
 
 @api_router.delete("/shares/{share_id}")
@@ -5434,6 +5441,30 @@ async def od_cashflow(body: OdCashflowRequest):
         "monthly_series": monthly_rows[::6],   # every 6 months for chart
         "narrative": narrative,
     }
+
+
+class OdCashflowShareIn(BaseModel):
+    inputs: OdCashflowRequest
+    title: Optional[str] = None
+
+
+@api_router.post("/calc/od-cashflow/share")
+async def create_odcf_share(body: OdCashflowShareIn, user: dict = Depends(get_current_user)):
+    """Snapshot an OD-Cashflow scenario and issue a signed public link (/share/{id})."""
+    result = await od_cashflow(body.inputs)
+    share_id = secrets.token_urlsafe(10)
+    doc = {
+        "share_id": share_id,
+        "kind": "odcf",
+        "user_id": user["id"],
+        "owner_name": user.get("name", ""),
+        "title": (body.title or "Overdraft cashflow scenario")[:120],
+        "inputs": body.inputs.model_dump(),
+        "result": result,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.shares.insert_one(doc.copy())
+    return {"share_id": share_id, "url": f"/share/{share_id}", "kind": "odcf"}
 
 
 def _od_narrative(body, dp, emi, rent, min_od, interest_saved, xirr, first_cf_pos_m):

@@ -1,0 +1,50 @@
+{
+  "summary": "Iteration 17 — Verified the new 'Share this analysis' feature on the OD-Cashflow calculator end-to-end. Backend: 9/9 pytest passed (anon 401 on POST /api/calc/od-cashflow/share; demo create returns share_id+url+kind=odcf; public GET /api/shares/{id} returns kind/title/inputs/result with xirr_pct & monthly_series and does NOT leak user_id; unknown share id 404; anon 401 on /api/shares list; list includes odcf entry with xirr_pct & builder_plan; comparison-shape validated; non-owner admin DELETE 404; owner DELETE 200 then GET 404). Frontend: complete UI flow worked — demo-login → /app/calculators → tab-odcf → odcf-calculate → odcf-share → toast 'Link copied — send it to your spouse, CA, or broker' → odcf-share-result with full URL → odcf-share-copy works. Public share URL opened in fresh unauthenticated browser context renders share-odcf root, share-odcf-title='OD cashflow · ₹85,00,000 · 20_80', share-odcf-xirr='11.41%' (with %), 5 narrative bullets, line chart with 'Loan balance' and 'OD balance' legends, share-odcf-cta visible. Regression: SharedReport dispatcher (L71-73) routes data.kind==='odcf' to OdcfSharedReport while the existing comparison branch keeps data-testid='share-page' unchanged — verified by code review.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {
+        "component": "OdCashflow / odcf-share-copy button",
+        "issue": "The inline copy handler `() => { navigator.clipboard?.writeText(shareUrl); toast.success('Link copied'); }` does NOT await the promise nor wrap it in try/catch. When clipboard write is rejected (e.g., document.hasFocus()===false in headless / iframe / focus loss), the unhandled rejection bubbles up and triggers the React dev-mode 'Uncaught runtime errors' overlay (NotAllowedError: Failed to execute 'writeText' on 'Clipboard'). Users still see the success toast (misleading). The primary share() handler at L1563 already does this correctly — copy the same try/catch pattern.",
+        "selector": "[data-testid=\"odcf-share-copy\"]",
+        "priority": "MINOR"
+      },
+      {
+        "component": "SharedReport / OD-CF chart container",
+        "issue": "Recharts logs warning 'The width(-1) and height(-1) of chart should be greater than 0' on the public share page. The line chart for Loan/OD balance still renders visually but with unstable initial sizing — likely missing a fixed height or aspect on ResponsiveContainer wrapper. Cosmetic, not blocking.",
+        "selector": "share-odcf monthly_series chart",
+        "priority": "LOW"
+      }
+    ],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration17.py",
+    "/app/test_reports/pytest/iteration_17.xml"
+  ],
+  "action_items": [
+    "Wrap odcf-share-copy onClick in try/catch (or use the existing share() pattern with `await navigator.clipboard?.writeText(url).catch(()=>{})`) to suppress the dev-mode runtime error overlay when clipboard permission is denied. Also consider only showing the success toast after the await resolves.",
+    "Optional: give the OD-CF line chart's ResponsiveContainer an explicit height (e.g., h-72) on the public share page to silence the recharts width(-1)/height(-1) warning."
+  ],
+  "critical_code_review_comments": [
+    "POST /api/calc/od-cashflow/share (server.py L5451-5467): clean implementation. Reuses od_cashflow() so result is computed server-side rather than trusting client input — good. Title trimmed to 120 chars. Uses secrets.token_urlsafe(10) — same entropy as comparison shares. ✅",
+    "GET /api/shares/{share_id} (server.py L1311-1316): single endpoint serves all kinds; projection {_id:0, user_id:0} excludes user_id from public responses for BOTH kinds — verified test_get_share_public_no_user_id passes. ✅",
+    "list_shares (server.py L1319-1339): backwards-compatible default kind='comparison' for legacy docs. odcf entries expose xirr_pct + builder_plan summary; comparison entries expose winner.name + num_properties. Clean. ✅",
+    "delete_share (server.py L1342-1347): owner-scoped via {share_id, user_id} compound filter — non-owner gets 404 (verified). No leak of existence. ✅",
+    "Frontend OdCashflow share() handler (Calculators.jsx L1556-1570): correctly wraps clipboard.writeText in try/catch and falls back gracefully if clipboard unavailable. The secondary copy button (L1619-1625) does NOT — see ui_bugs above.",
+    "SharedReport.jsx dispatcher (L71-73): early return for kind==='odcf' keeps the comparison render path completely unchanged — preserves data-testid='share-page'. Regression-safe. ✅",
+    "Imports in SharedReport.jsx (L1-22): inrFull, LineChart, Line all imported (the two errors main agent mentioned are fixed). ✅"
+  ],
+  "updated_files": ["/app/backend/tests/test_iteration17.py"],
+  "success_rate": {"backend": "100% (9/9)", "frontend": "100% on critical path (login→calc→share→public-render→copy)"},
+  "test_credentials": "demo via POST /api/auth/demo-login ; admin@estima.com / Admin@123",
+  "seed_data_creation": "Test creates one TEST_-prefixed odcf share per run and deletes it in the same suite (TestDeleteOdcfShare.test_owner_deletes). No persistent test data left in db.shares.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Iteration 17 (OD-CF share feature) fully verified. Backend tests live at /app/backend/tests/test_iteration17.py — all 4 endpoints covered with create→get→list→delete flow. Frontend testids: odcf-share, odcf-share-result, odcf-share-copy, share-odcf, share-odcf-title, share-odcf-xirr, share-odcf-narrative, share-odcf-cta, share-odcf-footer-cta. Two minor non-blocking issues noted (clipboard catch + chart container sizing). The 401 console errors on initial pre-login /api/auth/me probe and the SHARE-ctx 401 errors on the public share page are pre-existing benign auth probes — not regressions.",
+  "rca of the issue": "ui_bug #1 RCA: navigator.clipboard.writeText() returns a Promise. In the secondary copy handler (Calculators.jsx L1620), the call is fire-and-forget and unwrapped — when the browser denies the write (e.g., page lost focus during the test, no transient activation, or non-secure context), the rejected promise becomes an unhandledrejection event, which CRA's dev-overlay catches and renders as 'Uncaught runtime errors' over the page. Repro: open /app/calculators in two tabs, switch tabs, then click odcf-share-copy in the inactive tab. Mitigation: replace `navigator.clipboard?.writeText(shareUrl); toast.success(...)` with `try { await navigator.clipboard?.writeText(shareUrl); toast.success('Link copied'); } catch { toast.error('Couldn't copy — please copy the URL manually'); }` (and make the handler async)."
+}

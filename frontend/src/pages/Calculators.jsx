@@ -1537,16 +1537,35 @@ function OdCashflow() {
   });
   const [res, setRes] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [sharing, setSharing] = useState(false);
+  const [shareUrl, setShareUrl] = useState("");
 
   const calc = async () => {
     setLoading(true);
     try {
       const { data } = await api.post("/calc/od-cashflow", form);
       setRes(data);
+      setShareUrl("");
     } catch (e) {
       toast.error(formatApiErrorDetail(e.response?.data?.detail));
     } finally {
       setLoading(false);
+    }
+  };
+
+  const share = async () => {
+    setSharing(true);
+    try {
+      const title = `OD cashflow · ₹${Number(form.property_price).toLocaleString("en-IN")} · ${form.builder_plan.toUpperCase()}`;
+      const { data } = await api.post("/calc/od-cashflow/share", { inputs: form, title });
+      const url = `${window.location.origin}${data.url}`;
+      setShareUrl(url);
+      try { await navigator.clipboard?.writeText(url); } catch { /* no-op */ }
+      toast.success("Link copied — send it to your spouse, CA, or broker");
+    } catch (e) {
+      toast.error(formatApiErrorDetail(e.response?.data?.detail) || "Login required to share");
+    } finally {
+      setSharing(false);
     }
   };
 
@@ -1588,6 +1607,24 @@ function OdCashflow() {
         <button onClick={calc} disabled={loading} className="btn-primary px-6 py-3 text-sm mt-6" data-testid="odcf-calculate">
           {loading ? "Crunching…" : "Calculate"}
         </button>
+        {res && (
+          <button onClick={share} disabled={sharing} className="ml-3 btn-secondary px-5 py-3 text-sm mt-6" data-testid="odcf-share">
+            {sharing ? "Creating link…" : "Share this analysis"}
+          </button>
+        )}
+        {shareUrl && (
+          <div className="mt-5 card-flat p-4 flex items-center gap-3 text-sm" data-testid="odcf-share-result">
+            <span className="text-muted-foreground">Public link</span>
+            <code className="text-xs truncate flex-1">{shareUrl}</code>
+            <button
+              onClick={() => { navigator.clipboard?.writeText(shareUrl); toast.success("Link copied"); }}
+              className="underline text-[hsl(var(--secondary))]"
+              data-testid="odcf-share-copy"
+            >
+              Copy
+            </button>
+          </div>
+        )}
       </div>
 
       <div className="space-y-6">
