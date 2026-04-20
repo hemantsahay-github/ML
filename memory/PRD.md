@@ -362,7 +362,17 @@ Personal property buying options and decision making and managing — comparing 
 
 
 
-## Implemented (2026-04-20) — Iteration 17
+## Implemented (2026-04-20) — Iteration 18
+
+**Rental Snowball — replaces single-flat OD-Cashflow simulator:**
+- Backend: `POST /api/calc/rental-snowball` (anonymous). Model: `RentalSnowballRequest { starting_od_balance, monthly_surplus, loan_rate_pct, loan_tenure_years, rent_escalation_pct, appreciation_pct, analysis_years, target_flats: [TargetFlat{name, price_today, down_payment_pct, monthly_rent_today, is_under_construction, construction_months, desired_buy_month?}] }`. Month-loop simulator: OD pot in-flows = surplus + rents; out-flows = EMIs + pre-EMIs + DP withdrawals; autopicks next affordable flat each month unless `desired_buy_month` forces; appreciation applies to future purchase prices; rent escalates from today; UC flats pay interest-only pre-EMI during construction then switch to full EMI + rent. Returns `xirr_pct` (on DP cashflows incl. starting OD + terminal net-worth), `first_operating_cf_positive_month`, `first_cumulative_cf_positive_month`, terminal net-worth / OD / loan, purchases[], monthly_series[::3], yearly_snapshots[], narrative[].
+- Backend: `POST /api/calc/rental-snowball/share` (auth) — snapshots inputs + server-computed result into `shares` with `kind: "snowball"`. `GET /api/shares` list discriminator adds snowball branch with `xirr_pct` + `total_purchases`.
+- Frontend: new `RentalSnowball` component in `Calculators.jsx` under tab id `odcf` (label: "Rental Snowball (OD)"). Editable flats grid with add/delete/UC-toggle/possession-months inputs. KPIs (XIRR, flats acquired, op CF-positive month, cumulative CF-positive month, terminal net-worth). Recharts LineChart: OD pot vs Loan balance vs Cumulative CF. Purchase schedule table. Yearly/3-monthly series toggle. Share button → `/share/{id}`.
+- Frontend: `SharedReport.jsx` dispatches `data.kind === "snowball"` to new `SnowballSharedReport` (full KPI grid, LineChart, purchases table, narrative, CTA). Pre-existing `kind="odcf"` and `kind="comparison"` shares unchanged — verified.
+- Removed: old `OdCashflow` component + `NumF` + `Kpi` + `BUILDER_PLANS` from Calculators.jsx (~223 lines deleted). Old `/api/calc/od-cashflow` endpoint + `OdcfSharedReport` kept intact for backwards-compat with existing shared links.
+- Tests: iteration_18.json — 11/11 backend pytest + full frontend e2e (login → calc → share → public-render → regression on odcf and all 14 other calc tabs) all green.
+
+
 
 **Share OD-Cashflow scenario (P1 enhancement):**
 - Backend: `POST /api/calc/od-cashflow/share` (auth required) — snapshots inputs + computes result server-side, stores in `shares` collection with `kind: "odcf"`, returns `{share_id, url: /share/{id}, kind}`. Reuses existing `GET /api/shares/{id}` (kind-agnostic) and `DELETE /api/shares/{id}` (owner-only).
@@ -370,6 +380,12 @@ Personal property buying options and decision making and managing — comparing 
 - Frontend: `OdCashflow` in `Calculators.jsx` — new `odcf-share` button (appears after calc runs), auto-copies link via Clipboard API with try/catch, shows `odcf-share-result` card with full URL + `odcf-share-copy` button.
 - Frontend: `SharedReport.jsx` dispatches `data.kind === "odcf"` to a new `OdcfSharedReport` component that renders title, XIRR hero KPI, 7 supporting KPIs, full assumption grid, a Loan-vs-OD balance line chart (Recharts `LineChart`), narrative bullets, and a register CTA. Comparison path completely unchanged.
 - Tests: iteration_17.json — 9/9 backend pytest + full frontend e2e (login → calc → share → public-render → copy) all green.
+
+## Implemented (2026-04-20) — Iteration 17
+
+**Share OD-Cashflow scenario (P1 enhancement, superseded by Iteration 18's Snowball):**
+(See the Iteration 18 section above for the current sharing flow; iter-17 was the initial single-flat OD share mechanism which was extended — not replaced — in iter 18.)
+
 
 ## Implemented (2026-04-20) — Iteration 16
 
