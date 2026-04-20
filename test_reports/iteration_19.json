@@ -1,0 +1,36 @@
+{
+  "summary": "Iteration 19 — End-to-end verification of (1) POST /api/calc/rental-snowball/ai-narrative (Claude Sonnet 4.5 via Emergent LLM key), (2) Dashboard 'My shared reports' MySharesPanel, (3) Guide / Landing copy updates. Backend: 4/4 pytest passed in 31.6s. Anonymous → 401 (auth-gated). Demo user → 200 with a 1100-1400 char real Claude reply containing exactly 3 paragraphs (no markdown headings/bullets, no emojis, contains XIRR + ₹/% references). Token-budget pruning works (compact payload trims purchases[:6] + yearly_snapshots[:15], JSON capped to 8000 chars). /api/shares list still returns the discriminated snowball + odcf shape (5 entries on demo user including the 4 pre-existing + 1 newly seeded TEST_iter19 share). Frontend: full UI flow worked end-to-end on the public REACT_APP_BACKEND_URL. Demo-login → /app dashboard → seeded a fresh snowball share via fetch → reload showed dashboard-my-shares table with 5 rows. WhatsApp anchor href correctly = 'https://wa.me/?text=Rental%20snowball%20plan%20I%20modelled%20on%20Estima…'. share-copy-{id} click triggered toast (clipboard read returned blank in headless context — non-blocking, copy code is correct). share-delete-{id} with confirm dialog removed the row + toast 'Deleted' visible (screenshot captured). Calculators → tab-odcf → snow-calc → snow-xirr=16.56% → snow-ai-narrative-btn label toggled correctly: 'Get AI buyer's letter' → 'Thinking…' → 'Regenerate AI letter'. snow-ai-narrative card appeared with 3 <p> children, first paragraph cited '16.56% XIRR' and 'operating cash-flow positivity within the 15-y' — real numbers from the payload. After clicking snow-calc a second time, snow-ai-narrative correctly disappeared (state reset via setAiNarrative('') at L1571). Guide page (/app/guide) loaded cleanly with 'Rental Snowball' mention. ZERO console errors across the entire flow.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration19.py",
+    "/app/test_reports/pytest/iteration_19.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py L5697-5733 snowball_ai_narrative: clean implementation. Token budget pruning at L5713-5725 keeps the LLM payload tight (purchases[:6], yearly_snapshots[:15], JSON.dumps capped at 8000 chars). System prompt enforces 3 paragraphs / 60-90 words / no markdown / no emojis / ₹ formatting — verified in actual response. ✅",
+    "Auth gating: snowball_ai_narrative uses Depends(get_current_user) which raises 401 for anon — correct. ✅",
+    "Error handling at L5730-5732: catches all exceptions and returns 502 with truncated detail — good defensive practice for AI calls that can fail in many ways. ✅",
+    "Calculators.jsx L1571 setAiNarrative('') inside calc() correctly clears the AI letter when user re-runs the simulation — verified in UI. ✅",
+    "Calculators.jsx L1822 button label ternary: aiLoading ? 'Thinking…' : aiNarrative ? 'Regenerate AI letter' : 'Get AI buyer's letter' — all 3 states verified. ✅",
+    "Calculators.jsx L1836 paragraph split via /\\n\\s*\\n/ — works for Claude's double-newline output. Renders 3 distinct <p> elements as expected. ✅",
+    "Dashboard.jsx MySharesPanel (L249-381): clean. Hides itself when shares is empty (L304) — correct hidden-by-default behaviour. WhatsApp message string is kind-aware (snowball / odcf / comparison). copyLink uses optional-chaining on navigator.clipboard with toast fallback. del() uses window.confirm before DELETE /api/shares/{id} and updates local state via filter — no full reload required. ✅",
+    "MINOR: Dashboard.jsx L289 `setShares(shares.filter(...))` uses stale closure — should use functional setter `setShares(prev => prev.filter(...))` to avoid race when user clicks delete on multiple rows quickly. Not a functional bug for typical UX but a React best practice nit.",
+    "MINOR: Dashboard.jsx L292 `catch (e)` declares unused `e` — ESLint may flag if rules are tightened; harmless."
+  ],
+  "updated_files": ["/app/backend/tests/test_iteration19.py"],
+  "success_rate": {"backend": "100% (4/4)", "frontend": "100% on critical path (ai-narrative + my-shares-panel + state-reset + delete + guide)"},
+  "test_credentials": "demo via POST /api/auth/demo-login ; admin@estima.com / Admin@123",
+  "seed_data_creation": "Backend test creates a TEST_iter19 snowball share implicitly via /api/calc/rental-snowball POST (used for AI narrative input — does not call /share so no leftover share). Frontend test created 1 share titled 'TEST_iter19_panel_seed' via POST /api/calc/rental-snowball/share, then deleted it via the UI delete button as part of the test (verified row removed + 'Deleted' toast). Demo user share count back to 4 (pre-existing).",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Iteration 19 (AI buyer's letter + My Shares panel + guide/landing copy) fully verified. Backend test at /app/backend/tests/test_iteration19.py — 4 tests cover AI narrative auth/format + shares-list regression. CRITICAL pydantic field reminder: RentalSnowballRequest target_flats use price_today + monthly_rent_today (NOT price + rent — tripped the test once; fixed). The AI endpoint is REAL — calls Claude Sonnet 4.5 via Emergent LLM key, takes ~10-30s. Frontend testids confirmed live: snow-ai-narrative-btn, snow-ai-narrative, dashboard-my-shares, share-row-{id}, share-whatsapp-{id}, share-copy-{id}, share-delete-{id}. The MySharesPanel hides itself when shares is empty — if you ever see it missing, seed at least one share via /api/calc/rental-snowball/share before checking. Headless clipboard read returns empty string even with permissions granted — verify copy logic via DOM/state, not navigator.clipboard.readText().",
+  "rca of the issue": "No bugs found. One self-inflicted test setup error (used wrong field names price/rent instead of price_today/monthly_rent_today) was a TEST-SCRIPT issue and was fixed inside the test file. Product code is clean."
+}

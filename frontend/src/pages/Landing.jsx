@@ -18,8 +18,8 @@ const features = [
   },
   {
     icon: <Calculator size={22} weight="duotone" />,
-    title: "14 calculators with XIRR",
-    body: "EMI · Rent vs Buy · Car vs Property · UC expected value · RTM vs UC breakeven · Leverage Optimizer · Wealth narrative · Prepay vs Invest — all with proper XIRR math.",
+    title: "15 calculators incl. Rental Snowball",
+    body: "EMI · Rent vs Buy · Car vs Property · UC expected value · Leverage Optimizer · Wealth narrative · Prepay vs Invest — and our new Rental Snowball that simulates buying 3-5 flats from a single OD pot with XIRR on every rupee.",
   },
   {
     icon: <ChartLineUp size={22} weight="duotone" />,

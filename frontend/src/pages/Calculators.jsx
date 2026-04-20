@@ -1541,6 +1541,8 @@ function RentalSnowball() {
   const [sharing, setSharing] = useState(false);
   const [shareUrl, setShareUrl] = useState("");
   const [showAllMonths, setShowAllMonths] = useState(false);
+  const [aiNarrative, setAiNarrative] = useState("");
+  const [aiLoading, setAiLoading] = useState(false);
 
   const up = (k, v) => setForm({ ...form, [k]: v });
   const upFlat = (i, k, v) => setFlats(flats.map((f, j) => (j === i ? { ...f, [k]: v } : f)));
@@ -1566,6 +1568,7 @@ function RentalSnowball() {
       const { data } = await api.post("/calc/rental-snowball", payload());
       setRes(data);
       setShareUrl("");
+      setAiNarrative("");
     } catch (e) {
       toast.error(formatApiErrorDetail(e.response?.data?.detail) || "Calc failed");
     } finally {
@@ -1586,6 +1589,19 @@ function RentalSnowball() {
       toast.error(formatApiErrorDetail(e.response?.data?.detail) || "Login required to share");
     } finally {
       setSharing(false);
+    }
+  };
+
+  const getAi = async () => {
+    if (!res) return;
+    setAiLoading(true);
+    try {
+      const { data } = await api.post("/calc/rental-snowball/ai-narrative", { inputs: payload(), result: res });
+      setAiNarrative(data.narrative);
+    } catch (e) {
+      toast.error(formatApiErrorDetail(e.response?.data?.detail) || "Login required for AI");
+    } finally {
+      setAiLoading(false);
     }
   };
 
@@ -1795,7 +1811,17 @@ function RentalSnowball() {
 
               {res.narrative?.length > 0 && (
                 <div className="card-flat p-6">
-                  <div className="eyebrow mb-3">Narrative</div>
+                  <div className="flex items-center justify-between mb-3">
+                    <div className="eyebrow">Narrative</div>
+                    <button
+                      onClick={getAi}
+                      disabled={aiLoading}
+                      className="text-xs btn-secondary px-3 py-1.5"
+                      data-testid="snow-ai-narrative-btn"
+                    >
+                      {aiLoading ? "Thinking…" : aiNarrative ? "Regenerate AI letter" : "Get AI buyer's letter"}
+                    </button>
+                  </div>
                   <ul className="space-y-2.5" data-testid="snow-narrative">
                     {res.narrative.map((n, i) => (
                       <li key={`${n.slice(0, 24)}-${i}`} className="flex gap-3 text-sm">
@@ -1804,6 +1830,14 @@ function RentalSnowball() {
                       </li>
                     ))}
                   </ul>
+                  {aiNarrative && (
+                    <div className="mt-5 pt-5 border-t hairline space-y-3" data-testid="snow-ai-narrative">
+                      <div className="eyebrow text-[hsl(var(--secondary))]">AI buyer's letter</div>
+                      {aiNarrative.split(/\n\s*\n/).filter(Boolean).map((p, i) => (
+                        <p key={`ai-${i}`} className="text-sm leading-relaxed text-foreground/90">{p}</p>
+                      ))}
+                    </div>
+                  )}
                 </div>
               )}
 

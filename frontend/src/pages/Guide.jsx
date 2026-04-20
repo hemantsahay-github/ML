@@ -62,6 +62,7 @@ const FEATURES = [
       "Car vs Property — full finance comparison (car DP + loan + running cost vs property DP + loan + rent).",
       "EMI · Rent vs Buy · Property vs MF vs Equity · Cashflow-positive finder.",
       "Rent-for-cashflow — the rent you need today to make your owned property CF-positive in N years.",
+      "Rental Snowball (OD) — multi-flat simulator: one OD pot collects salary surplus + rents and auto-withdraws down-payments to buy the next flat. Shows exactly when the portfolio self-funds. XIRR on all DPs + Claude-generated AI buyer's letter.",
       "Resale estimator — min/current rent, renovation, broker fee, LTCG. Returns true XIRR.",
       "Loan Leverage Optimizer — DP sweep with 10-yr XIRR including appreciation + rent + EMI.",
       "Builder plan — CLP vs 10:90 vs subvention. UC expected value at possession (w/ pre-EMI by builder).",
@@ -380,12 +381,12 @@ export default function Guide() {
           </div>
           <div className="card-flat p-6">
             <ShareNetwork size={20} weight="duotone" className="text-[hsl(var(--secondary))] mb-3" />
-            <div className="font-serif text-xl mb-2">Make the decision public (privately)</div>
+            <div className="font-serif text-xl mb-2">Share any scenario (privately)</div>
             <p className="text-sm text-muted-foreground">
-              The Share link generates a read-only comparison page at
+              Comparison reports, OD-cashflow scenarios AND Rental Snowball plans all generate signed public links at
               {" "}
-              <code className="text-foreground">/share/&lt;id&gt;</code>. It's a snapshot — future edits
-              to your properties don't change what the recipient sees.
+              <code className="text-foreground">/share/&lt;id&gt;</code>. Every share is a snapshot — future edits
+              don't change what the recipient sees. Your Dashboard lists every report with one-click WhatsApp / Copy / Delete.
             </p>
           </div>
         </div>

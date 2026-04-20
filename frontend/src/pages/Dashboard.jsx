@@ -4,7 +4,8 @@ import { useAuth } from "../context/AuthContext";
 import api from "../lib/api";
 import { inr } from "../lib/format";
 import { logger } from "../lib/logger";
-import { ArrowRight, Buildings, Plus, TrendUp, Scales, MapTrifold, Calendar, MapPin } from "@phosphor-icons/react";
+import { toast } from "sonner";
+import { ArrowRight, Buildings, Plus, TrendUp, Scales, MapTrifold, Calendar, MapPin, WhatsappLogo, Copy, Trash } from "@phosphor-icons/react";
 
 export default function Dashboard() {
   const { user } = useAuth();
@@ -200,6 +201,8 @@ export default function Dashboard() {
           testid="tool-properties"
         />
       </section>
+
+      <MySharesPanel />
     </div>
   );
 }
@@ -239,5 +242,141 @@ function EmptyState() {
         <Plus size={16} weight="bold" /> Add your first property
       </Link>
     </div>
+  );
+}
+
+
+function MySharesPanel() {
+  const [shares, setShares] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  const load = useCallback(async () => {
+    try {
+      const { data } = await api.get("/shares");
+      setShares(data);
+    } catch (e) {
+      logger.debug("shares load failed", e);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+  useEffect(() => { load(); }, [load]);
+
+  const publicUrl = (s) => `${window.location.origin}/share/${s.share_id}`;
+
+  const copyLink = async (s) => {
+    try {
+      await navigator.clipboard?.writeText(publicUrl(s));
+      toast.success("Link copied");
+    } catch {
+      toast.error("Couldn't copy — please open the link manually");
+    }
+  };
+
+  const whatsappLink = (s) => {
+    const msg = s.kind === "snowball"
+      ? `Rental snowball plan I modelled on Estima — XIRR ${s.xirr_pct}% on ${s.total_purchases} flats. ${publicUrl(s)}`
+      : s.kind === "odcf"
+      ? `OD cashflow scenario I modelled on Estima — XIRR ${s.xirr_pct}%. ${publicUrl(s)}`
+      : `Property comparison I ran on Estima — winner: ${s.winner}. ${publicUrl(s)}`;
+    return `https://wa.me/?text=${encodeURIComponent(msg)}`;
+  };
+
+  const del = async (s) => {
+    if (!window.confirm(`Delete "${s.title}"? The public link will stop working.`)) return;
+    try {
+      await api.delete(`/shares/${s.share_id}`);
+      setShares(shares.filter((x) => x.share_id !== s.share_id));
+      toast.success("Deleted");
+    } catch (e) {
+      toast.error("Couldn't delete");
+    }
+  };
+
+  const kindLabel = (k) => ({ snowball: "Snowball", odcf: "OD Cashflow", comparison: "Comparison" }[k] || k);
+  const kindTone = (k) => ({
+    snowball: "bg-[hsl(var(--secondary))]/10 text-[hsl(var(--secondary))] border-[hsl(var(--secondary))]/30",
+    odcf: "bg-[hsl(var(--primary))]/10 text-[hsl(var(--primary))] border-[hsl(var(--primary))]/30",
+    comparison: "bg-foreground/5 text-foreground border-foreground/20",
+  }[k] || "");
+
+  if (loading) return null;
+  if (shares.length === 0) return null;
+
+  return (
+    <section className="mt-14" data-testid="dashboard-my-shares">
+      <div className="flex items-end justify-between mb-5">
+        <div>
+          <div className="eyebrow mb-2">My shared reports</div>
+          <h2 className="font-serif text-3xl">Every time someone opens one, it's a free lead for you.</h2>
+        </div>
+      </div>
+
+      <div className="card-flat overflow-hidden">
+        <table className="w-full text-sm">
+          <thead className="text-left text-muted-foreground border-b hairline">
+            <tr>
+              <th className="p-4 font-normal eyebrow">Title</th>
+              <th className="p-4 font-normal eyebrow">Kind</th>
+              <th className="p-4 font-normal eyebrow">Detail</th>
+              <th className="p-4 font-normal eyebrow">Created</th>
+              <th className="p-4 font-normal eyebrow text-right">Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {shares.map((s) => (
+              <tr key={s.share_id} className="border-b hairline last:border-0" data-testid={`share-row-${s.share_id}`}>
+                <td className="p-4">
+                  <Link to={`/share/${s.share_id}`} target="_blank" rel="noreferrer" className="font-serif text-lg hover:text-[hsl(var(--secondary))] transition">
+                    {s.title}
+                  </Link>
+                </td>
+                <td className="p-4">
+                  <span className={`inline-block px-2 py-0.5 border text-[10px] uppercase tracking-wider ${kindTone(s.kind)}`}>{kindLabel(s.kind)}</span>
+                </td>
+                <td className="p-4 text-muted-foreground text-xs">
+                  {s.kind === "snowball" && `${s.total_purchases} flats · XIRR ${s.xirr_pct}%`}
+                  {s.kind === "odcf" && `${s.builder_plan?.toUpperCase()} · XIRR ${s.xirr_pct}%`}
+                  {s.kind === "comparison" && `${s.num_properties} properties · winner: ${s.winner || "—"}`}
+                </td>
+                <td className="p-4 text-muted-foreground text-xs">
+                  {new Date(s.created_at).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" })}
+                </td>
+                <td className="p-4">
+                  <div className="flex gap-1 justify-end">
+                    <a
+                      href={whatsappLink(s)}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="p-2 hover:text-[hsl(var(--secondary))] transition"
+                      title="Share on WhatsApp"
+                      data-testid={`share-whatsapp-${s.share_id}`}
+                    >
+                      <WhatsappLogo size={16} weight="duotone" />
+                    </a>
+                    <button
+                      onClick={() => copyLink(s)}
+                      className="p-2 hover:text-[hsl(var(--secondary))] transition"
+                      title="Copy link"
+                      data-testid={`share-copy-${s.share_id}`}
+                    >
+                      <Copy size={16} weight="duotone" />
+                    </button>
+                    <button
+                      onClick={() => del(s)}
+                      className="p-2 hover:text-destructive transition"
+                      title="Delete"
+                      data-testid={`share-delete-${s.share_id}`}
+                    >
+                      <Trash size={16} weight="duotone" />
+                    </button>
+                  </div>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </section>
   );
 }

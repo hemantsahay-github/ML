@@ -5689,6 +5689,51 @@ def _snowball_narrative(body, purchases, op_cf_m, cum_cf_m, xirr, terminal, od, 
     return lines
 
 
+class SnowballAiNarrativeIn(BaseModel):
+    inputs: RentalSnowballRequest
+    result: dict
+
+
+@api_router.post("/calc/rental-snowball/ai-narrative")
+async def snowball_ai_narrative(body: SnowballAiNarrativeIn, user: dict = Depends(get_current_user)):
+    """Generate a 3-paragraph persuasive buyer's-letter on top of a computed snowball scenario."""
+    session_id = f"snow-{user['id']}-{uuid.uuid4()}"
+    system = (
+        "You are Estima, a sharp Indian real-estate strategist writing for a single investor. "
+        "Input is a multi-flat 'rental snowball' simulation: an overdraft (OD) pot collects salary surplus + rents and withdraws down-payments to buy new flats (RTM or UC). "
+        "Write EXACTLY 3 concise paragraphs (60-90 words each), no headings, plain prose, no markdown bullets, English only. "
+        "Paragraph 1 — Verdict: does this plan work? State operating-CF-positive month and XIRR in the first 2 sentences. "
+        "Paragraph 2 — Why a specific flat was delayed/skipped OR why CF stays negative. Use real numbers from the purchases list and series. "
+        "Paragraph 3 — The ONE highest-leverage change (surplus ↑, DP % ↓, rate ↓, extend horizon, drop a flat). Quantify expected delta in XIRR or CF-positive month. "
+        "Use ₹ with lakh/crore. Never invent numbers not in the payload. Never use emojis."
+    )
+    chat = LlmChat(api_key=EMERGENT_LLM_KEY, session_id=session_id, system_message=system).with_model("anthropic", "claude-sonnet-4-5-20250929")
+
+    # Prune payload → only keep fields the LLM needs (purchases, key KPIs, inputs summary)
+    compact = {
+        "inputs": body.inputs.model_dump(),
+        "xirr_pct": body.result.get("xirr_pct"),
+        "first_operating_cf_positive_month": body.result.get("first_operating_cf_positive_month"),
+        "first_cumulative_cf_positive_month": body.result.get("first_cumulative_cf_positive_month"),
+        "terminal_net_worth": body.result.get("terminal_net_worth"),
+        "terminal_loan_balance": body.result.get("terminal_loan_balance"),
+        "terminal_od_balance": body.result.get("terminal_od_balance"),
+        "total_purchases": body.result.get("total_purchases"),
+        "unpurchased_count": body.result.get("unpurchased_count"),
+        "purchases": body.result.get("purchases", [])[:6],
+        "yearly_snapshots": body.result.get("yearly_snapshots", [])[:15],
+    }
+    try:
+        import json
+        prompt = f"Analyse this rental-snowball scenario and write the 3-paragraph letter.\n\n[scenario JSON]\n{json.dumps(compact, default=str)[:8000]}"
+        reply = await chat.send_message(UserMessage(text=prompt))
+    except Exception as e:
+        logger.exception("snowball ai narrative error")
+        raise HTTPException(502, f"AI unavailable: {str(e)[:200]}")
+    return {"narrative": reply}
+
+
+
 class RentalSnowballShareIn(BaseModel):
     inputs: RentalSnowballRequest
     title: Optional[str] = None
