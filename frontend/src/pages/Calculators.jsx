@@ -1617,7 +1617,14 @@ function OdCashflow() {
             <span className="text-muted-foreground">Public link</span>
             <code className="text-xs truncate flex-1">{shareUrl}</code>
             <button
-              onClick={() => { navigator.clipboard?.writeText(shareUrl); toast.success("Link copied"); }}
+              onClick={async () => {
+                try {
+                  await navigator.clipboard?.writeText(shareUrl);
+                  toast.success("Link copied");
+                } catch {
+                  toast.error("Couldn't copy — please select the URL manually");
+                }
+              }}
               className="underline text-[hsl(var(--secondary))]"
               data-testid="odcf-share-copy"
             >

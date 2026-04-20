@@ -362,6 +362,15 @@ Personal property buying options and decision making and managing — comparing 
 
 
 
+## Implemented (2026-04-20) — Iteration 17
+
+**Share OD-Cashflow scenario (P1 enhancement):**
+- Backend: `POST /api/calc/od-cashflow/share` (auth required) — snapshots inputs + computes result server-side, stores in `shares` collection with `kind: "odcf"`, returns `{share_id, url: /share/{id}, kind}`. Reuses existing `GET /api/shares/{id}` (kind-agnostic) and `DELETE /api/shares/{id}` (owner-only).
+- `GET /api/shares` (list) now returns a discriminated payload per kind: odcf entries expose `xirr_pct` + `builder_plan`; comparison entries retain `winner` + `num_properties`. Backwards-compat: legacy docs default to `kind="comparison"`.
+- Frontend: `OdCashflow` in `Calculators.jsx` — new `odcf-share` button (appears after calc runs), auto-copies link via Clipboard API with try/catch, shows `odcf-share-result` card with full URL + `odcf-share-copy` button.
+- Frontend: `SharedReport.jsx` dispatches `data.kind === "odcf"` to a new `OdcfSharedReport` component that renders title, XIRR hero KPI, 7 supporting KPIs, full assumption grid, a Loan-vs-OD balance line chart (Recharts `LineChart`), narrative bullets, and a register CTA. Comparison path completely unchanged.
+- Tests: iteration_17.json — 9/9 backend pytest + full frontend e2e (login → calc → share → public-render → copy) all green.
+
 ## Implemented (2026-04-20) — Iteration 16
 
 **OD Cashflow Calculator (P0 user request):**
